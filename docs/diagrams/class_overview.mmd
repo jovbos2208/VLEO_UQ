@@ -1,0 +1,87 @@
+classDiagram
+  class PropagatorConfig {
+    +mu_earth_m3_s2
+    +rtol, atol, max_step_s
+    +rho_fast_tau_s, rho_fast_sigma
+    +rho_bias_tau_s, rho_bias_sigma
+    +wind_tau_s, wind_sigma
+    +freeze_attitude
+  }
+
+  class EnvInputs {
+    +density
+    +temperature_K
+    +particles_mass_kg
+    +wind_I
+    +eta1_rad, eta2_rad
+  }
+
+  class VehicleParams {
+    +mass_kg
+    +inertia_B
+  }
+
+  class AeroAdapter {
+    +init(GeometryConfig)
+    +compute_ft(...)
+  }
+
+  class DeterministicPropagator {
+    +propagate(x0,t_grid,env)
+  }
+
+  class EnsemblePropagatorMC {
+    +propagate(X0,t_grid,env)
+  }
+
+  class SigmaPointPropagatorUT {
+    +propagate(x0,P0,t_grid,env,augment_process_noise)
+  }
+
+  class StmPropagator {
+    +propagate(x0,P0,t_grid,env,return_stm)
+  }
+
+  class SpaceWeatherDataset
+  class EnvSeriesBuilder {
+    +build(t_grid,lat,lon,alt,...)
+  }
+
+  class GnssMeasurements
+  class SlrMeasurements
+
+  class PodEstimator {
+    +batch_od_position(...)
+    +batch_od_measurements(...)
+    +run_pod_uq_measurements(...)
+  }
+
+  class AttitudeFilters {
+    +run_mekf(...)
+    +run_mekf_fullstate(...)
+    +run_ukf_fullstate(...)
+  }
+
+  DeterministicPropagator --> AeroAdapter
+  EnsemblePropagatorMC --> AeroAdapter
+  SigmaPointPropagatorUT --> AeroAdapter
+  StmPropagator --> AeroAdapter
+
+  DeterministicPropagator --> EnvInputs
+  EnsemblePropagatorMC --> EnvInputs
+  SigmaPointPropagatorUT --> EnvInputs
+  StmPropagator --> EnvInputs
+
+  DeterministicPropagator --> VehicleParams
+  EnsemblePropagatorMC --> VehicleParams
+  SigmaPointPropagatorUT --> VehicleParams
+  StmPropagator --> VehicleParams
+
+  DeterministicPropagator --> PropagatorConfig
+  EnsemblePropagatorMC --> PropagatorConfig
+  SigmaPointPropagatorUT --> PropagatorConfig
+  StmPropagator --> PropagatorConfig
+
+  EnvSeriesBuilder --> SpaceWeatherDataset
+  PodEstimator --> GnssMeasurements
+  PodEstimator --> SlrMeasurements

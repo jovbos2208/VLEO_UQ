@@ -1,0 +1,14 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "pybind11>=2.11", "numpy"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vleo-uq"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[tool.scikit-build]
+wheel.packages = ["python/vleo_uq"]
+cmake.minimum-version = "3.21"
+cmake.build-type = "Release"

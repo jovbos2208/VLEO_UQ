@@ -1,0 +1,24 @@
+{
+  "scenarios": [
+    {
+      "name": "mission",
+      "type": "mission",
+      "duration_s": 10800,
+      "dt_s": 60,
+      "particles": 32,
+      "augment_process_noise": false
+    },
+    {
+      "name": "formation",
+      "type": "formation",
+      "duration_s": 10800,
+      "dt_s": 60,
+      "particles": 32,
+      "formation_offsets_m": [
+        [0.0, 0.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [0.0, 100.0, 0.0]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+flowchart LR
+  %% Simplified VLEO_UQ framework overview
+
+  subgraph Define["1) Define Scenarios"]
+    catalog["scenario_catalog.md"]
+    converter["catalog_to_case_config.py"]
+    cfg["configs/generated/*.json"]
+    catalog --> converter --> cfg
+  end
+
+  subgraph Launch["2) Launch Runs"]
+    slurm["run_all_A/B/C_scenarios.slurm"]
+    mono["run_case_studies.py"]
+    paper["run_paper_a1_a2_c1.sh"]
+  end
+
+  subgraph Sim["3) Simulate + UQ"]
+    env["Environment builder<br/>(synthetic or OMNI2+HWM14+NRLMSIS21)"]
+    prop["C++ propagator + aero core<br/>(DET / MC / UT / STM)"]
+    shards["Optional distributed MC/UT shards"]
+    env --> prop
+    prop --> shards
+  end
+
+  subgraph Est["4) Measurements + POD (optional)"]
+    meas["GNSS/SLR simulation"]
+    pod["Batch or EnKF POD"]
+    meas --> pod
+  end
+
+  subgraph Out["5) Outputs"]
+    uqout["mc_ut_stm.npz"]
+    sum["summary.json"]
+    podout["pod/summary.json + arc files"]
+    figs["plots + thesis figures"]
+  end
+
+  subgraph Val["6) Dedicated Validation"]
+    vscript["validate_propagator_conservation.py"]
+    vout["results/propagator_validation_thesis/*"]
+    vscript --> vout
+  end
+
+  cfg --> slurm
+  cfg --> mono
+  cfg --> paper
+
+  slurm --> Sim
+  mono --> Sim
+  paper --> mono
+
+  Sim --> uqout
+  Sim --> sum
+  Sim --> Est
+
+  Est --> podout
+  uqout --> figs
+  sum --> figs
+  podout --> figs
+
+  classDef block fill:#eef5ff,stroke:#3f6db3,color:#111,stroke-width:1px;
+  classDef io fill:#eaf8ef,stroke:#2f7a45,color:#111,stroke-width:1px;
+  classDef out fill:#fff1f0,stroke:#b04a48,color:#111,stroke-width:1px;
+  classDef val fill:#fffbe6,stroke:#a37b00,color:#111,stroke-width:1px;
+
+  class catalog,converter,cfg,slurm,mono,paper,env,prop,shards,meas,pod block;
+  class uqout,sum,podout,figs out;
+  class vscript,vout val;

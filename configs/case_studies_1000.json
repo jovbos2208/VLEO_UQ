@@ -1,0 +1,45 @@
+{
+  "scenarios": [
+    {
+      "name": "mission",
+      "type": "mission",
+      "duration_s": 10800,
+      "dt_s": 60,
+      "particles": 1000,
+      "augment_process_noise": false
+    },
+    {
+      "name": "formation",
+      "type": "formation",
+      "duration_s": 10800,
+      "dt_s": 60,
+      "particles": 1000,
+      "formation_offsets_m": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          100.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          100.0,
+          0.0
+        ]
+      ]
+    },
+    {
+      "name": "attitude",
+      "type": "attitude",
+      "duration_s": 600,
+      "dt_s": 5,
+      "particles": 1000,
+      "wing_amp_deg": 10.0,
+      "wing_period_s": 120.0
+    }
+  ]
+}

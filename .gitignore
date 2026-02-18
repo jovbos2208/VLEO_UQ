@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+_skbuild/
+.cmake/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Native artifacts
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+
+# Logs and runtime artifacts
+*.log
+*.out
+*.err
+*.pid
+
+# Generated results/data products
+results/
+data/
+wheelhouse/
+slurm_scripts/
+
+# Local caches/artifacts inside vendored modules
+force_moment_module_v4/.cache/
+force_moment_module_v4/.mpl-cache/
+force_moment_module_v4/Testing/Temporary/
+
+# Embedded local repos not tracked in this remote
+Protocoll/Thesis_Template/
+Protocoll/UQ-Sensitivity-Paper/
+
+# Editors/OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,12 @@
+{
+  "scenarios": [
+    {
+      "name": "mission_only",
+      "type": "mission",
+      "duration_s": 10800,
+      "dt_s": 60,
+      "particles": 32,
+      "augment_process_noise": false
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+flowchart TB
+  %% =========================
+  %% VLEO_UQ End-to-End Framework Workflow
+  %% =========================
+
+  %% ---- Inputs & Scenario Definition ----
+  subgraph Inputs["1) Scientific Inputs and Scenario Definition"]
+    catalog["scenario_catalog.md<br/>YAML scenario blocks<br/>ATT / FORM / OD"]
+    toggles["Composable toggles<br/>ENV / GSI / SENSOR / GROUND / EST / CONTROL"]
+    ids["ID filters in launch scripts<br/>ATT_A* / FORM_B* / OD_C*"]
+    converter["scripts/catalog_to_case_config.py<br/>Catalog -> runtime JSON"]
+    cfg["configs/generated/*.json<br/>scenarios[] with:<br/>name,type,duration,dt,particles,<br/>env overrides,POD flags,events"]
+  end
+
+  %% ---- Launch Paths ----
+  subgraph Launch["2) Launch and Orchestration Paths"]
+    slurmA["run_all_A_scenarios.slurm"]
+    slurmB["run_all_B_scenarios.slurm"]
+    slurmC["run_all_C_scenarios.slurm"]
+    runCatalog["scripts/run_catalog_scenarios.sh"]
+    mono["scripts/run_case_studies.py<br/>Monolithic single-process pipeline"]
+    paperSlurm["run_paper_a1_a2_c1.slurm"]
+    paperSh["scripts/run_paper_a1_a2_c1.sh"]
+    paperCfg["scripts/paper_build_config_a1_a2_c1.py"]
+    paperPost["scripts/paper_analyze_uq_a1_a2_c1.py"]
+  end
+
+  %% ---- Distributed HPC Phases ----
+  subgraph HPC["3) Distributed HPC Pipeline (A/B/C)"]
+    p1a["Phase 1a<br/>scripts/run_det_stm_phase.py<br/>DET + STM per scenario"]
+    p1b_mc["Phase 1b-MC<br/>scripts/run_mc_job_array.py"]
+    p1b_mc_merge["scripts/merge_mc_stats.py"]
+    p1c_ut["Phase 1c-UT<br/>scripts/run_ut_job_array.py"]
+    p1c_ut_merge["scripts/merge_ut_shards.py"]
+    p2["Phase 2<br/>scripts/postprocess_scenario.py"]
+    p2pod["scripts/postprocess_uq_pod.py<br/>arc-wise POD + summaries"]
+  end
+
+  %% ---- Scenario Runtime Preparation ----
+  subgraph Prep["4) Runtime Preparation per Scenario"]
+    selectCase["Scenario selection<br/>--scenario or VLEO_CASE_NAME"]
+    initGrid["Time grid build<br/>dt from min(dt_control, dt_meas)<br/>with dt_floor"]
+    initState["build_initial_state()<br/>Kepler -> ECI or direct ECI state"]
+    initCov["P0 templates<br/>mission/formation vs attitude"]
+    wing["wing_profile()<br/>eta1/eta2 for attitude scenarios"]
+    events["parse_events_config()<br/>optional event injection<br/>(delta-v / attitude reset)"]
+  end
+
+  %% ---- Environment Branch ----
+  subgraph Env["5) Environment Construction"]
+    envMode["Environment mode switch<br/>synthetic vs source-driven"]
+    envSynth["build_env()<br/>rho,T,m fixed<br/>zero wind baseline"]
+    envSrc["build_env_from_sources()"]
+    eciGeo["ECI -> geodetic along guess trajectory"]
+    omni["OMNI2 parse<br/>F10.7/F10.7a81/Ap/Kp/Dst"]
+    hwm["HWM14 wind model<br/>or zero-wind fallback"]
+    nrl["NRLMSIS21 density model"]
+    swDataset["Space weather dataset<br/>time interpolation"]
+    envSeries["EnvSeriesBuilder.build()<br/>EnvInputs[k]"]
+    densityScale["Catalog density_scale<br/>ENV_Q2 / ENV_Q3"]
+  end
+
+  %% ---- Propagation Core ----
+  subgraph Core["6) Dynamics and Aerodynamics Core"]
+    facade["python/vleo_uq facade (__init__.py)"]
+    pybind["cpp/bindings/_vleo_uq (pybind11)"]
+    propCpp["cpp/src/propagator.cpp<br/>DET / MC / UT / STM engines"]
+    aero["force_moment_module_v4<br/>AeroAdapter + panel/shadowing/GSI"]
+    dop853["Adaptive DOP853-like integration<br/>rtol, atol, max_step_s"]
+    latent["Latent OU / RW processes<br/>rho_fast, rho_bias, wind_bias"]
+    freeze["freeze_attitude flag<br/>mission/formation true, attitude false"]
+  end
+
+  %% ---- UQ Execution ----
+  subgraph UQ["7) Uncertainty Propagation and Comparison"]
+    detRun["Deterministic propagation"]
+    mcRun["Monte Carlo ensemble propagation"]
+    utRun["Unscented Transform propagation"]
+    stmRun["STM/covariance propagation"]
+    metrics["Cross-method metrics<br/>ut_mean_err / stm_mean_err<br/>ut_cov_rel_err / stm_cov_rel_err"]
+    shards["Shard outputs per rank/task<br/>ensemble_rank*.npz / ut shard npz"]
+  end
+
+  %% ---- Measurement & POD ----
+  subgraph POD["8) Measurement Simulation and POD"]
+    podGate["POD gate<br/>pod_uq + scenario POD flags"]
+    sp3["GNSS SP3 ingest<br/>parse_sp3() + optional sat clock"]
+    eop["EOP ingest<br/>parse_eop_all()"]
+    gnssPos["GNSS constellation states<br/>from SP3 or synthetic fallback"]
+    gnssMeas["simulate_gnss_measurements()<br/>dual-frequency code+carrier<br/>LOS/FOV/dropout/slip settings"]
+    slrStations["default_ilrs_stations()"]
+    slrMask["slr_availability_mask()"]
+    slrMeas["simulate_slr_measurements()<br/>sigma=0.01 m"]
+    arcs["Arc builder<br/>pod_arc_s / pod_overlap_s"]
+    arcSlice["slice_gnss_measurements()<br/>slice_slr_measurements()"]
+    batchOD["Batch estimator path<br/>run_pod_uq_measurements()"]
+    enkfOD["EnKF estimator path<br/>run_pod_uq_measurements_enkf()"]
+    arcSummary["summarize_arc_metrics()<br/>summarize_multi_arc()"]
+  end
+
+  %% ---- Outputs ----
+  subgraph Outputs["9) Artifacts and Scientific Outputs"]
+    detFile["results/<case>/det_stm.npz"]
+    mcStats["results/<case>_mc_stats.npz"]
+    utMerged["results/<case>_ut_merged.npz"]
+    fused["results/<case>/mc_ut_stm.npz"]
+    summary["results/<case>/summary.json"]
+    plots["trajectory / states / RTN plots"]
+    podDir["results/<case>/pod/<arc files + summary.json>"]
+    swOut["results/<case>/space_weather.json"]
+    formOut["results/<formation>/formation_metrics.npz"]
+    paperOut["results/paper_*/paper_analysis/*"]
+  end
+
+  %% ---- Validation Branch ----
+  subgraph Validation["10) Dedicated Propagator Validation Branch"]
+    valScript["scripts/validate_propagator_conservation.py"]
+    valCfg["Vacuum + drag sanity setup<br/>dt sweep {1,2,5,10,30,60}s<br/>rtol=1e-7, atol=1e-9"]
+    valOut["results/propagator_validation_thesis/<br/>conservation_metrics.csv/json,<br/>summary.json, fig01/02/03.pdf"]
+  end
+
+  %% ---- Input and Config Flow ----
+  toggles --> catalog
+  ids --> converter
+  catalog --> converter --> cfg
+
+  %% ---- Launch Connections ----
+  slurmA --> converter
+  slurmB --> converter
+  slurmC --> converter
+  slurmA --> p1a
+  slurmA --> p1b_mc
+  slurmA --> p1c_ut
+  slurmA --> p2
+  slurmB --> p1a
+  slurmB --> p1b_mc
+  slurmB --> p1c_ut
+  slurmB --> p2
+  slurmC --> p1a
+  slurmC --> p1b_mc
+  slurmC --> p1c_ut
+  slurmC --> p2
+
+  runCatalog --> converter
+  runCatalog --> mono
+  paperSlurm --> paperSh --> paperCfg --> cfg
+  paperSh --> mono
+  mono --> paperPost --> paperOut
+
+  %% ---- Shared Config Feed ----
+  cfg --> p1a
+  cfg --> p1b_mc
+  cfg --> p1c_ut
+  cfg --> p2
+  cfg --> mono
+
+  %% ---- Distributed Phase Flow ----
+  p1a --> detFile
+  p1b_mc --> shards --> p1b_mc_merge --> mcStats
+  p1c_ut --> shards --> p1c_ut_merge --> utMerged
+  p2 --> fused
+  p2 --> summary
+  p2 --> plots
+  p2 --> formOut
+  p2 --> podGate
+  podGate --> p2pod
+  p2pod --> podDir
+
+  %% ---- Monolithic Runtime Flow ----
+  mono --> selectCase --> initGrid
+  mono --> initState
+  mono --> initCov
+  mono --> wing
+  mono --> events
+  initGrid --> envMode
+  initState --> envMode
+
+  %% ---- Environment Detail Flow ----
+  envMode --> envSynth
+  envMode --> envSrc
+  envSrc --> eciGeo
+  eciGeo --> swDataset
+  omni --> swDataset
+  hwm --> envSeries
+  nrl --> envSeries
+  swDataset --> envSeries
+  envSrc --> envSeries
+  envSeries --> densityScale
+  envSynth --> densityScale
+
+  %% ---- Core Coupling ----
+  mono --> facade --> pybind --> propCpp
+  propCpp --> aero
+  propCpp --> dop853
+  propCpp --> latent
+  propCpp --> freeze
+  densityScale --> detRun
+  densityScale --> mcRun
+  densityScale --> utRun
+  densityScale --> stmRun
+  initGrid --> detRun
+  initGrid --> mcRun
+  initGrid --> utRun
+  initGrid --> stmRun
+  initState --> detRun
+  initState --> mcRun
+  initState --> utRun
+  initState --> stmRun
+  initCov --> mcRun
+  initCov --> utRun
+  initCov --> stmRun
+  wing --> detRun
+  wing --> mcRun
+  wing --> utRun
+  wing --> stmRun
+  events --> detRun
+  events --> mcRun
+  events --> utRun
+  events --> stmRun
+  propCpp --> detRun
+  propCpp --> mcRun
+  propCpp --> utRun
+  propCpp --> stmRun
+
+  %% ---- UQ Outputs ----
+  detRun --> fused
+  mcRun --> fused
+  utRun --> fused
+  stmRun --> fused
+  mcRun --> metrics
+  utRun --> metrics
+  stmRun --> metrics
+  metrics --> summary
+  envSeries --> swOut
+
+  %% ---- POD Detail ----
+  mono --> podGate
+  p2 --> podGate
+  podGate --> sp3
+  podGate --> eop
+  sp3 --> gnssPos
+  eop --> gnssPos
+  gnssPos --> gnssMeas
+  slrStations --> slrMask --> slrMeas
+  detRun --> gnssMeas
+  detRun --> slrMeas
+  initGrid --> arcs
+  gnssMeas --> arcSlice
+  slrMeas --> arcSlice
+  arcs --> arcSlice
+  arcSlice --> batchOD
+  arcSlice --> enkfOD
+  batchOD --> arcSummary
+  enkfOD --> arcSummary
+  arcSummary --> podDir
+  arcSummary --> summary
+
+  %% ---- Validation Branch ----
+  valScript --> valCfg --> valOut
+
+  %% ---- Styling ----
+  classDef scripts fill:#fff8e1,stroke:#8a6d1d,color:#222,stroke-width:1px;
+  classDef data fill:#e8f0ff,stroke:#2b5dab,color:#111,stroke-width:1px;
+  classDef compute fill:#e9f7ef,stroke:#1e7e34,color:#111,stroke-width:1px;
+  classDef output fill:#fcebea,stroke:#a94442,color:#111,stroke-width:1px;
+
+  class catalog,toggles,ids,converter,cfg scripts;
+  class slurmA,slurmB,slurmC,runCatalog,mono,paperSlurm,paperSh,paperCfg,paperPost,p1a,p1b_mc,p1b_mc_merge,p1c_ut,p1c_ut_merge,p2,p2pod,valScript scripts;
+  class omni,hwm,nrl,swDataset,envSeries,sp3,eop,gnssPos,gnssMeas,slrStations,slrMask,slrMeas,arcs,arcSlice,batchOD,enkfOD,arcSummary,selectCase,initGrid,initState,initCov,wing,events,envMode,envSynth,envSrc,eciGeo,facade,pybind,propCpp,aero,dop853,latent,freeze,detRun,mcRun,utRun,stmRun,metrics,podGate,densityScale,shards,valCfg compute;
+  class detFile,mcStats,utMerged,fused,summary,plots,podDir,swOut,formOut,paperOut,valOut output;

@@ -1,0 +1,57 @@
+flowchart LR
+  subgraph Input["Input + Scenario"]
+    cfg["Scenario config\\n(JSON / catalog-derived)"]
+    selector["Scenario selector\\n(name, type, overrides)"]
+    init["Initialize x0, P0, t_grid"]
+    ev["Optional events\\n(delta-v, attitude reset)"]
+  end
+
+  subgraph Env["Environment"]
+    sw["Space weather series\\nF10.7, F10.7a81, Ap, Kp, Dst"]
+    dens["Density model\\nNRLMSIS21"]
+    wind["Wind model\\nHWM14 or zero-wind fallback"]
+    envin["EnvInputs[k]\\n(rho, T, m, wind_I, eta1, eta2)"]
+    latent["Latent OU states\\nlog_rho_fast, log_rho_bias, wind_bias"]
+  end
+
+  subgraph Propagation["UQ + Propagation"]
+    uqsamp["Initial UQ sampling\\nMC particles / UT sigma points"]
+    prop["DET / MC / UT / STM propagators"]
+    aero["Aero/GSI + shadowing\\n(force_B, torque_B)"]
+    dyn["Dynamics integrator\\nadaptive DOP853"]
+    states["State histories X(t),\\nmean/cov, STM Phi"]
+  end
+
+  subgraph SensorsEst["Sensors + Estimation"]
+    sensors["Sensor simulation\\nGNSS code+carrier, SLR,\\nstar tracker, gyro"]
+    meas["Measurements y, sigmas,\\nindices, ambiguities"]
+    est["Estimators\\nBatch OD (BLS), MEKF, UKF"]
+    resid["Residuals, nuisance params,\\nposterior P"]
+  end
+
+  subgraph Output["Outputs"]
+    qoi["QoIs\\nRTN errors, sigma coverage,\\nformation/attitude metrics"]
+    files["Artifacts\\n det_stm.npz, mc_ut_stm.npz,\\n pod summaries, plots"]
+  end
+
+  cfg --> selector --> init
+  selector --> ev
+
+  cfg --> sw
+  sw --> dens
+  sw --> wind
+  dens --> envin
+  wind --> envin
+
+  init --> uqsamp
+  uqsamp -- "X0 / sigma-set" --> prop
+  init -- "x0, P0, t_grid" --> prop
+  envin --> prop
+  latent -. "process noise (Q)" .-> prop
+  ev --> prop
+
+  prop --> aero --> dyn --> states
+  states --> sensors --> meas --> est --> resid --> qoi
+  states --> est
+  states --> qoi
+  qoi --> files

@@ -1,0 +1,74 @@
+flowchart TD
+  subgraph Orchestration["Run Orchestration"]
+    catalog["scenario_catalog.md\\n(YAML blocks)"]
+    converter["scripts/catalog_to_case_config.py"]
+    cfg["configs/*.json\\nscenario list"]
+    slurm["run_all_{A,B,C}_scenarios.slurm"]
+    run_case["scripts/run_case_studies.py"]
+    phase1["scripts/run_det_stm_phase.py"]
+    mcjob["scripts/run_mc_job_array.py + scripts/mc_scenarios.py"]
+    utjob["scripts/run_ut_job_array.py + scripts/ut_scenarios.py"]
+    post["scripts/postprocess_scenario.py"]
+  end
+
+  subgraph PyPkg["Python Package (python/vleo_uq)"]
+    facade["vleo_uq/__init__.py facade"]
+    pod["pod_uq.py"]
+    env["env_sources.py"]
+    sp3["gnss_ephemeris.py"]
+    attf["attitude_filter.py"]
+    events["events.py"]
+  end
+
+  subgraph Cpp["C++ Core"]
+    pybind["cpp/bindings/_vleo_uq"]
+    prop["cpp/src/propagator.cpp"]
+    aero["force_moment_module_v4\\n(aero_adapter + vleo_aerodynamics + aerodynamics + shadowing)"]
+  end
+
+  subgraph DataIO["Data + Outputs"]
+    data["data/* staged assets\\n(OMNI, HWM14, SP3, EOP, OBJ)"]
+    out["results/*\\n(npz/json/png)"]
+  end
+
+  catalog --> converter --> cfg
+  slurm --> converter
+  slurm --> phase1
+  slurm --> mcjob
+  slurm --> utjob
+  slurm --> post
+  run_case --> cfg
+  phase1 --> cfg
+  mcjob --> cfg
+  utjob --> cfg
+  post --> cfg
+
+  run_case --> facade
+  phase1 --> facade
+  mcjob --> facade
+  utjob --> facade
+  post --> facade
+
+  facade --> pod
+  facade --> env
+  facade --> sp3
+  facade --> attf
+  facade --> events
+  facade --> pybind
+
+  pod --> env
+  sp3 --> env
+
+  pybind --> prop
+  pybind --> aero
+  prop --> aero
+
+  env --> data
+  pod --> data
+  sp3 --> data
+
+  run_case --> out
+  phase1 --> out
+  mcjob --> out
+  utjob --> out
+  post --> out

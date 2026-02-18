@@ -1,0 +1,105 @@
+{
+  "scenarios": [
+    {
+      "name": "att_a1_detumble_aero_only",
+      "type": "attitude",
+      "duration_s": 21600.0,
+      "dt_s": 1.0,
+      "particles": 256,
+      "augment_process_noise": true,
+      "propagator_overrides": {
+        "rho_fast_tau_s": 900.0,
+        "rho_fast_sigma": 0.15,
+        "wind_tau_s": 900.0,
+        "wind_sigma": 10.0
+      },
+      "density_scale": 1.0,
+      "pod_uq": false,
+      "pod_skip_slr": true,
+      "pod_disable_gnss": false,
+      "pod_estimator": "batch",
+      "use_env_sources": true,
+      "catalog_area": "ATT",
+      "catalog_purpose": "Detumble from high initial rates using aerodynamic panels only.",
+      "catalog_uq_method": "MC",
+      "orbit": {
+        "type": "kepler",
+        "alt_km": 350,
+        "e": 0.001,
+        "i_deg": 51.6
+      },
+      "start_utc": "2025-01-24T00:00:00",
+      "wing_amp_deg": 15.0,
+      "wing_period_s": 90.0
+    },
+    {
+      "name": "att_a2_nadir_pointing",
+      "type": "attitude",
+      "duration_s": 43200.0,
+      "dt_s": 1.0,
+      "particles": 256,
+      "augment_process_noise": true,
+      "propagator_overrides": {
+        "rho_fast_tau_s": 900.0,
+        "rho_fast_sigma": 0.15
+      },
+      "density_scale": 1.0,
+      "pod_uq": false,
+      "pod_skip_slr": true,
+      "pod_disable_gnss": false,
+      "pod_estimator": "batch",
+      "use_env_sources": true,
+      "catalog_area": "ATT",
+      "catalog_purpose": "Maintain nadir-pointing via aerodynamic panel control.",
+      "catalog_uq_method": "UT",
+      "orbit": {
+        "type": "kepler",
+        "alt_km": 350,
+        "e": 0.001,
+        "i_deg": 97.0
+      },
+      "start_utc": "2025-01-24T00:00:00",
+      "wing_amp_deg": 10.0,
+      "wing_period_s": 120.0,
+      "ut_alpha": 0.001,
+      "ut_beta": 2.0,
+      "ut_kappa": 0.0
+    },
+    {
+      "name": "od_c1_gnss_continuous_bestcase",
+      "type": "mission",
+      "duration_s": 86400.0,
+      "dt_s": 1.0,
+      "particles": 256,
+      "augment_process_noise": true,
+      "propagator_overrides": {
+        "rho_fast_tau_s": 900.0,
+        "rho_fast_sigma": 0.15
+      },
+      "density_scale": 1.0,
+      "pod_uq": true,
+      "pod_skip_slr": true,
+      "pod_disable_gnss": false,
+      "pod_estimator": "enkf",
+      "use_env_sources": true,
+      "catalog_area": "OD",
+      "catalog_purpose": "Best-case OD with continuous raw GNSS code/carrier(+Doppler).",
+      "catalog_uq_method": "UT",
+      "orbit": {
+        "type": "kepler",
+        "alt_km": 350,
+        "e": 0.001,
+        "i_deg": 51.6
+      },
+      "start_utc": "2025-01-24T00:00:00",
+      "ut_alpha": 0.001,
+      "ut_beta": 2.0,
+      "ut_kappa": 0.0,
+      "pod_enkf_members": 128,
+      "pod_enkf_inflation": 1.02,
+      "pod_enkf_use_carrier": false,
+      "pod_arc_s": 7200.0,
+      "pod_overlap_s": 0.0
+    }
+  ]
+}
