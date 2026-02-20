@@ -340,6 +340,43 @@ def simulate_star_tracker_measurements(
     return indices, meas
 
 
+def _predict_magnetometer_body(
+    q_wxyz: np.ndarray,
+    env: EnvInputs,
+) -> np.ndarray:
+    R_BI = quat_wxyz_to_dcm(quat_normalize(np.array(q_wxyz, dtype=float)))
+    b_i = np.array(env.magnetic_field_I_T, dtype=float).reshape(3)
+    return R_BI @ b_i
+
+
+def simulate_magnetometer_measurements(
+    truth: AttitudeTruth,
+    env: Sequence[EnvInputs],
+    sigma_T: Sequence[float] | float = 1e-7,
+    bias_T: Sequence[float] | float = 0.0,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    if rng is None:
+        rng = np.random.default_rng(0)
+    if len(env) != truth.t_grid.size:
+        raise ValueError("env must align with truth timeline")
+    sigma = np.array(sigma_T if np.isscalar(sigma_T) else sigma_T, dtype=float)
+    if sigma.shape == ():
+        sigma = np.full(3, float(sigma))
+    if sigma.shape != (3,):
+        raise ValueError("sigma_T must be scalar or length-3")
+    bias = np.array(bias_T if np.isscalar(bias_T) else bias_T, dtype=float)
+    if bias.shape == ():
+        bias = np.full(3, float(bias))
+    if bias.shape != (3,):
+        raise ValueError("bias_T must be scalar or length-3")
+    out = np.zeros((truth.t_grid.size, 3), dtype=float)
+    for i in range(truth.t_grid.size):
+        b_body = _predict_magnetometer_body(truth.q_wxyz[i], env[i])
+        out[i] = b_body + bias + sigma * rng.normal(size=3)
+    return out
+
+
 def run_mekf(
     t_grid: np.ndarray,
     gyro_meas: np.ndarray,
@@ -823,6 +860,8 @@ def run_mekf_fullstate(
     star_sigma: float = 1e-4,
     gyro_meas: Optional[np.ndarray] = None,
     gyro_sigma: float = 1e-3,
+    magnetometer_meas: Optional[np.ndarray] = None,
+    magnetometer_sigma: float = 1e-7,
 ) -> FullStateFilterResult:
     t_grid = np.array(t_grid, dtype=float)
     if t_grid.size < 2:
@@ -833,6 +872,8 @@ def run_mekf_fullstate(
         raise ValueError("P0 must match state size")
     if gyro_meas is not None and gyro_meas.shape != (t_grid.size, 3):
         raise ValueError("gyro_meas must be (Nt, 3)")
+    if magnetometer_meas is not None and magnetometer_meas.shape != (t_grid.size, 3):
+        raise ValueError("magnetometer_meas must be (Nt, 3)")
 
     x = np.zeros((t_grid.size, prop_stm.state_size))
     P = np.zeros((t_grid.size, prop_stm.state_size, prop_stm.state_size))
@@ -854,6 +895,21 @@ def run_mekf_fullstate(
             R = np.eye(3) * (gyro_sigma ** 2)
             z = gyro_meas[i]
             x_pred, P_pred = _kalman_update(x_pred, P_pred, z, H, R)
+
+        if magnetometer_meas is not None:
+            z = np.array(magnetometer_meas[i], dtype=float)
+            z_pred = _predict_magnetometer_body(x_pred[6:10], env[i])
+            H = np.zeros((3, prop_stm.state_size))
+            eps = 1e-7
+            for j in range(4):
+                x_pert = x_pred.copy()
+                x_pert[6 + j] += eps
+                x_pert[6:10] = quat_normalize(x_pert[6:10])
+                z_pert = _predict_magnetometer_body(x_pert[6:10], env[i])
+                H[:, 6 + j] = (z_pert - z_pred) / eps
+            R = np.eye(3) * (magnetometer_sigma ** 2)
+            x_pred, P_pred = _kalman_update(x_pred, P_pred, z, H, R)
+            x_pred[6:10] = quat_normalize(x_pred[6:10])
 
         if i in star_map:
             z = np.array(star_meas[star_map[i]], dtype=float)
@@ -883,6 +939,8 @@ def run_ukf_fullstate(
     star_sigma: float = 1e-4,
     gyro_meas: Optional[np.ndarray] = None,
     gyro_sigma: float = 1e-3,
+    magnetometer_meas: Optional[np.ndarray] = None,
+    magnetometer_sigma: float = 1e-7,
     alpha: float = 1e-3,
     beta: float = 2.0,
     kappa: float = 0.0,
@@ -894,6 +952,8 @@ def run_ukf_fullstate(
         raise ValueError("env must align with t_grid")
     if gyro_meas is not None and gyro_meas.shape != (t_grid.size, 3):
         raise ValueError("gyro_meas must be (Nt, 3)")
+    if magnetometer_meas is not None and magnetometer_meas.shape != (t_grid.size, 3):
+        raise ValueError("magnetometer_meas must be (Nt, 3)")
 
     x = np.zeros((t_grid.size, prop_ut.state_size))
     P = np.zeros((t_grid.size, prop_ut.state_size, prop_ut.state_size))
@@ -917,6 +977,18 @@ def run_ukf_fullstate(
             x_pred, P_pred = _ukf_measurement_update(
                 x_pred, P_pred, z, h_gyro, R, alpha, beta, kappa
             )
+
+        if magnetometer_meas is not None:
+            z = np.array(magnetometer_meas[i], dtype=float)
+            R = np.eye(3) * (magnetometer_sigma ** 2)
+
+            def h_mag(xi: np.ndarray) -> np.ndarray:
+                return _predict_magnetometer_body(xi[6:10], env[i])
+
+            x_pred, P_pred = _ukf_measurement_update(
+                x_pred, P_pred, z, h_mag, R, alpha, beta, kappa
+            )
+            x_pred[6:10] = quat_normalize(x_pred[6:10])
 
         if i in star_map:
             z = np.array(star_meas[star_map[i]], dtype=float)
@@ -949,6 +1021,8 @@ def run_enkf_fullstate(
     star_sigma: float = 1e-4,
     gyro_meas: Optional[np.ndarray] = None,
     gyro_sigma: float = 1e-3,
+    magnetometer_meas: Optional[np.ndarray] = None,
+    magnetometer_sigma: float = 1e-7,
     members: int = 64,
     seed: int = 0,
     inflation: float = 1.0,
@@ -960,6 +1034,8 @@ def run_enkf_fullstate(
         raise ValueError("env must align with t_grid")
     if gyro_meas is not None and gyro_meas.shape != (t_grid.size, 3):
         raise ValueError("gyro_meas must be (Nt, 3)")
+    if magnetometer_meas is not None and magnetometer_meas.shape != (t_grid.size, 3):
+        raise ValueError("magnetometer_meas must be (Nt, 3)")
 
     rng = np.random.default_rng(seed)
     X = _sample_state_ensemble(np.array(x0, dtype=float), np.array(P0, dtype=float), members, rng)
@@ -991,6 +1067,23 @@ def run_enkf_fullstate(
                     rng=rng,
                     inflation=inflation,
                 )
+
+        if magnetometer_meas is not None:
+            z = np.array(magnetometer_meas[i], dtype=float)
+            y_pred_all = np.zeros((X.shape[0], 3), dtype=float)
+            for j in range(X.shape[0]):
+                y_pred_all[j] = _predict_magnetometer_body(X[j, 6:10], env[i])
+            for axis in range(3):
+                X = _enkf_scalar_update(
+                    X,
+                    y_pred=y_pred_all[:, axis],
+                    z=float(z[axis]),
+                    sigma=magnetometer_sigma,
+                    rng=rng,
+                    inflation=inflation,
+                )
+            for j in range(X.shape[0]):
+                X[j, 6:10] = quat_normalize(X[j, 6:10])
 
         if i in star_map:
             z = np.array(star_meas[star_map[i]], dtype=float)

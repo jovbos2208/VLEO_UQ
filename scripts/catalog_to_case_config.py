@@ -18,11 +18,61 @@ def map_type(area: str) -> str:
     area = (area or "").strip().upper()
     if area == "ATT":
         return "attitude"
-    if area == "FORM":
+    if area in {"FORM", "MIS"}:
         return "formation"
-    if area == "OD":
+    if area in {"OD", "ORB", "AERO"}:
         return "mission"
     raise ValueError(f"unsupported area '{area}'")
+
+
+def infer_type_from_controls(area: str, control_toggles: set[str]) -> str:
+    keys = {str(k).strip().upper() for k in control_toggles if str(k).strip()}
+    if any(k.startswith("CTL_DD_") for k in keys):
+        return "formation"
+    if any(k.startswith("CTL_ATT_") for k in keys):
+        return "attitude"
+    return map_type(area)
+
+
+def extract_toggles(section: dict | None, *keys: str) -> set[str]:
+    if not isinstance(section, dict):
+        return set()
+    out: set[str] = set()
+    for key in keys:
+        raw = section.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            s = raw.strip()
+            if s:
+                out.add(s)
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            for item in raw:
+                s = str(item).strip()
+                if s:
+                    out.add(s)
+    return out
+
+
+def choose_primary_control_toggle(control_toggles: set[str]) -> str:
+    if not control_toggles:
+        return ""
+    ordered = [
+        "CTL_DD_REPHASE",
+        "CTL_DD_ALONGTRACK",
+        "CTL_ATT_DRAG_MIN",
+        "CTL_ATT_AERO_POINT",
+        "CTL_ATT_AERO_RATE",
+        "CTL_ORB_THRUST_SMA",
+        "CTL_ORB_DRAG_COMP",
+        "CTL_NONE",
+    ]
+    keys = {str(k).strip() for k in control_toggles if str(k).strip()}
+    for k in ordered:
+        if k in keys:
+            return k
+    return sorted(keys)[0]
 
 
 def choose_dt_seconds(block: dict, scenario_type: str, dt_floor: float) -> float:
@@ -73,13 +123,13 @@ def default_formation_offsets(scenario_id: str) -> list[list[float]]:
         return [[0.0, 0.0, 0.0]]
     if "2SAT" in sid:
         return [[0.0, 0.0, 0.0], [120.0, 0.0, 0.0]]
+    if "CLUSTER" in sid:
+        return [[0.0, 0.0, 0.0], [120.0, 0.0, 0.0], [240.0, 0.0, 0.0], [360.0, 0.0, 0.0]]
     return [[0.0, 0.0, 0.0], [120.0, 0.0, 0.0], [240.0, 0.0, 0.0]]
 
 
-def maybe_rephase_event(block: dict, duration_s: float) -> list[dict]:
-    control = block.get("control", {}) or {}
-    toggle = str(control.get("control_toggle", ""))
-    if toggle != "CTL_DD_REPHASE":
+def maybe_rephase_event(control_toggles: set[str], duration_s: float) -> list[dict]:
+    if "CTL_DD_REPHASE" not in {str(k).strip() for k in control_toggles}:
         return []
     duration = float(duration_s)
     if duration <= 0.0:
@@ -103,41 +153,43 @@ def convert_block(
     dt_floor: float,
 ) -> dict:
     scenario_id = str(block["scenario_id"]).strip()
-    scenario_type = map_type(str(block.get("area", "")).strip())
+    area = str(block.get("area", "")).strip()
+    control = block.get("control", {}) or {}
+    control_toggles = extract_toggles(control, "toggles", "control_toggle")
+    scenario_type = infer_type_from_controls(area, control_toggles)
     duration_s = float(block.get("duration_s", 3600.0)) * float(duration_scale)
     dt_s = choose_dt_seconds(block, scenario_type, dt_floor)
 
     uq = block.get("uq", {}) or {}
-    method = str(uq.get("method", "MC+UT")).upper()
+    method = str(uq.get("propagator", uq.get("method", "PROP_MC"))).upper()
     particles = int(uq.get("n_mc", default_particles))
     if particles < 2:
         particles = max(2, default_particles)
 
     env = block.get("environment", {}) or {}
-    env_toggles = set(env.get("env_toggle", []) or [])
+    env_toggles = extract_toggles(env, "toggles", "env_toggle")
     overrides, augment_process_noise, density_scale = map_env_to_overrides(env_toggles)
     aero = block.get("aero", {}) or {}
-    gsi_toggles = set(aero.get("gsi_toggle", []) or [])
+    gsi_toggles = extract_toggles(aero, "toggles", "gsi_toggle")
 
     sensors = block.get("sensors", {}) or {}
-    sensor_toggles = set(sensors.get("sensor_toggle", []) or [])
+    sensor_toggles = extract_toggles(sensors, "toggles", "sensor_toggle")
     ground = block.get("ground", {}) or {}
-    ground_toggles = set(ground.get("ground_toggle", []) or [])
-    pod_uq = bool(
-        block.get("area", "").strip().upper() == "OD"
-        or ("SENS_GNSS_RAW_DUAL" in sensor_toggles)
-        or ("SENS_GNSS_RAW_SINGLE" in sensor_toggles)
-        or ("SENS_SLR" in sensor_toggles)
-    )
+    ground_toggles = extract_toggles(ground, "toggles", "ground_toggle")
+    area_upper = area.strip().upper()
     has_gnss = ("SENS_GNSS_RAW_DUAL" in sensor_toggles) or ("SENS_GNSS_RAW_SINGLE" in sensor_toggles)
     has_slr = "SENS_SLR" in sensor_toggles
+    pod_uq = bool(
+        (area_upper == "OD")
+        or has_gnss
+        or has_slr
+    )
     pod_skip_slr = not has_slr
     pod_disable_gnss = has_slr and (not has_gnss)
     estimation = block.get("estimation", {}) or {}
-    est_toggles = set(estimation.get("est_toggle", []) or [])
+    est_toggles = extract_toggles(estimation, "toggles", "est_toggle")
     pod_estimator = "enkf" if "EST_ENKF" in est_toggles else "batch"
-    control = block.get("control", {}) or {}
-    control_toggle = str(control.get("control_toggle", "")).strip()
+    control_toggle = choose_primary_control_toggle(control_toggles)
 
     out = {
         "name": scenario_id.lower(),
@@ -154,7 +206,7 @@ def convert_block(
         "pod_disable_gnss": bool(pod_disable_gnss),
         "pod_estimator": pod_estimator,
         "use_env_sources": bool(use_env_sources),
-        "catalog_area": block.get("area"),
+        "catalog_area": area,
         "catalog_purpose": block.get("purpose"),
         "catalog_uq_method": method,
         "catalog_env_toggles": sorted(str(t) for t in env_toggles),
@@ -165,10 +217,27 @@ def convert_block(
         "catalog_control_toggles": [control_toggle] if control_toggle else [],
     }
 
+    # Optional extended stochastic channels from catalog env toggles.
+    if ("ENV_C3_COMPOSITION_OU" in env_toggles) or ("ENV_COMP_O_N2" in env_toggles):
+        out["composition_discrepancy_on"] = True
+        out["composition_sigma_rel"] = 0.15
+        out["composition_tau_s"] = 1800.0
+        out["composition_df"] = 4.0
+        out["composition_clip_rel"] = 0.5
+
+    if "ENV_S3_STORM_JUMP" in env_toggles:
+        out["storm_jump_on"] = True
+        out["storm_jump_rate_per_day"] = 2.0
+        out["storm_jump_duration_s"] = 10800.0
+        out["storm_jump_sigma_rel"] = 0.35
+        out["storm_jump_mean_rel"] = 0.15
+        out["storm_jump_df"] = 4.0
+        out["storm_jump_clip_rel"] = 0.9
+
     weather_on = ("GRD_WEATHER_ON" in ground_toggles) and ("GRD_WEATHER_OFF" not in ground_toggles)
     if weather_on:
         out["pod_slr_weather_on"] = True
-        out["pod_slr_weather_clear_prob"] = 0.65 if scenario_id.upper().startswith("OD_C8_") else 0.8
+        out["pod_slr_weather_clear_prob"] = 0.65 if ("GRD_REG_EU" in ground_toggles) else 0.8
         out["pod_slr_weather_p_stay_clear"] = 0.97
         out["pod_slr_weather_p_stay_blocked"] = 0.92
     elif "GRD_WEATHER_OFF" in ground_toggles:
@@ -280,7 +349,7 @@ def convert_block(
         out["eta_rate_max_deg_s"] = 5.0
         out["eta_accel_max_deg_s2"] = 1.0
         # Detumble case should start with a clear high-rate initial condition.
-        if scenario_id.upper() == "ATT_A1_DETUMBLE_AERO_ONLY":
+        if scenario_id.upper() in {"ATT_A1_DETUMBLE_AERO_ONLY", "ATT_01_DETUMBLE_AERO_ONLY"}:
             out["initial_w_BI_B_deg_s"] = [8.0, -6.0, 10.0]
         # Baseline axis-rotation maneuvers should start from zero body rates by default.
         if "maneuver_axis" in out and ("initial_w_BI_B_deg_s" not in out) and ("initial_w_BI_B_rad_s" not in out):
@@ -293,7 +362,7 @@ def convert_block(
     if "ut_kappa" in uq:
         out["ut_kappa"] = float(uq["ut_kappa"])
 
-    events = maybe_rephase_event(block, duration_s)
+    events = maybe_rephase_event(control_toggles, duration_s)
     if events:
         out["events"] = events
 

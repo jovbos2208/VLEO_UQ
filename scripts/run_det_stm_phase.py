@@ -21,6 +21,7 @@ from scripts.run_case_studies import (
     scenario_initial_w0_rad_s,
     wing_profile_for_scenario,
 )
+from scripts.model_discrepancy import apply_density_model_discrepancy
 from scripts.uq_parameter_channels import apply_uq_parameter_channels
 
 
@@ -123,7 +124,16 @@ def main() -> None:
     if args.start_utc:
         start_utc = dt.datetime.fromisoformat(args.start_utc)
 
-    def build_env_case(t_grid, x0, prop_det, eta1_rad, eta2_rad, density_scale: float = 1.0):
+    def build_env_case(
+        t_grid,
+        x0,
+        prop_det,
+        eta1_rad,
+        eta2_rad,
+        scenario: dict,
+        scenario_seed: int,
+        density_scale: float = 1.0,
+    ):
         if not args.use_env_sources:
             env = build_env(
                 t_grid,
@@ -137,6 +147,7 @@ def main() -> None:
             if density_scale != 1.0:
                 for e in env:
                     e.density *= float(density_scale)
+            apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(scenario_seed))
             return env
         if start_utc is None:
             raise ValueError("start_utc required when use_env_sources is set")
@@ -160,6 +171,7 @@ def main() -> None:
             if density_scale != 1.0:
                 for e in env:
                     e.density *= float(density_scale)
+            apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(scenario_seed))
             return env
         except Exception as exc:
             if strict:
@@ -181,6 +193,7 @@ def main() -> None:
             if density_scale != 1.0:
                 for e in env:
                     e.density *= float(density_scale)
+            apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(scenario_seed))
             return env
 
     def require_finite(name: str, label: str, arr: np.ndarray, dt_s: float) -> None:
@@ -218,6 +231,8 @@ def main() -> None:
                 prop_det,
                 None,
                 None,
+                scenario,
+                scenario_seed,
                 density_scale=float(scenario.get("density_scale", 1.0)),
             )
             det_states = prop_det.propagate(x0, t_grid, env)
@@ -258,6 +273,8 @@ def main() -> None:
                     prop_det,
                     None,
                     None,
+                    scenario,
+                    scenario_seed,
                     density_scale=float(scenario.get("density_scale", 1.0)),
                 )
                 det_states = prop_det.propagate(x0, t_grid, env)
@@ -301,6 +318,8 @@ def main() -> None:
                 prop_det,
                 eta1_rad,
                 eta2_rad,
+                scenario,
+                scenario_seed,
                 density_scale=float(scenario.get("density_scale", 1.0)),
             )
             det_states = prop_det.propagate(x0, t_grid, env)

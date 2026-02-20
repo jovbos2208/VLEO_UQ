@@ -1,5 +1,6 @@
 import math
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from vleo_uq import (
     run_enkf_fullstate,
     run_mekf_fullstate,
     run_ukf_fullstate,
+    simulate_magnetometer_measurements,
 )
 
 
@@ -55,12 +57,15 @@ class TestFullStateFilter(unittest.TestCase):
             e.temperature_K = 1000.0
             e.particles_mass_kg = 28.0 * 1.6605390689252e-27
             e.wind_I = np.zeros(3)
+            e.magnetic_field_I_T = np.array([2.0e-5, -1.5e-5, 3.2e-5], dtype=float)
             env.append(e)
 
         truth = prop_det.propagate(x0, t_grid, env)
         star_indices = np.arange(0, t_grid.size, 5, dtype=int)
         star_meas = truth[star_indices, 6:10]
         gyro_meas = truth[:, 10:13]
+        truth_like = SimpleNamespace(t_grid=t_grid, q_wxyz=truth[:, 6:10])
+        mag_meas = simulate_magnetometer_measurements(truth_like, env, sigma_T=1e-9, rng=np.random.default_rng(5))
 
         P0 = np.eye(prop_det.state_size) * 1e-12
         mekf = run_mekf_fullstate(
@@ -74,6 +79,8 @@ class TestFullStateFilter(unittest.TestCase):
             star_sigma=1e-6,
             gyro_meas=gyro_meas,
             gyro_sigma=1e-6,
+            magnetometer_meas=mag_meas,
+            magnetometer_sigma=1e-8,
         )
         ukf = run_ukf_fullstate(
             prop_ut,
@@ -86,6 +93,8 @@ class TestFullStateFilter(unittest.TestCase):
             star_sigma=1e-6,
             gyro_meas=gyro_meas,
             gyro_sigma=1e-6,
+            magnetometer_meas=mag_meas,
+            magnetometer_sigma=1e-8,
         )
         enkf = run_enkf_fullstate(
             prop_mc,
@@ -98,6 +107,8 @@ class TestFullStateFilter(unittest.TestCase):
             star_sigma=1e-6,
             gyro_meas=gyro_meas,
             gyro_sigma=1e-6,
+            magnetometer_meas=mag_meas,
+            magnetometer_sigma=1e-8,
             members=32,
             seed=13,
             inflation=1.0,

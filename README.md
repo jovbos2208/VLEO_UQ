@@ -58,6 +58,63 @@ python scripts/run_case_studies.py \
 
 Outputs are written under `results/`.
 
+Phase A/B/C campaign (Plan + Plan_progression):
+
+```bash
+python scripts/run_phase_campaign.py \
+  --phase all \
+  --threads 4 \
+  --seed 42 \
+  --strict_campaign
+```
+
+Useful quick-check mode before full paper-scale runs:
+
+```bash
+python scripts/run_phase_campaign.py \
+  --phase all \
+  --threads 4 \
+  --seed 42 \
+  --duration_scale 0.01 \
+  --max_particles 32 \
+  --disable_pod \
+  --strict_campaign
+```
+
+This writes:
+- `results/run_campaign_*/run_summary.json`
+- `results/run_campaign_*/campaign_report.json`
+- `results/run_campaign_*/phase_campaign_summary.json`
+
+Paper phase runs (separate A/B/C workflows with plots):
+
+```bash
+# direct launcher
+bash scripts/run_paper_phase.sh phase_a
+bash scripts/run_paper_phase.sh phase_b
+bash scripts/run_paper_phase.sh phase_c
+```
+
+Each run writes:
+- `paper_phase_summary.json`
+- `phase_report.json`
+- `run_summary.json`
+- `paper_plots/` (phase-level figures + `phase_plot_report.json`)
+
+SLURM wrappers:
+
+```bash
+sbatch slurm_scripts/run_paper_phase_A.slurm
+sbatch slurm_scripts/run_paper_phase_B.slurm
+sbatch slurm_scripts/run_paper_phase_C.slurm
+```
+
+Useful overrides (via environment or `sbatch --export`):
+- `SEED`, `THREADS`, `DEFAULT_PARTICLES`, `MAX_PARTICLES`
+- `DURATION_SCALE`, `DT_FLOOR`
+- `DISABLE_POD=1` (fast debug mode)
+- `PLOT_CASE_TRACES=1`, `MAKE_PHASE_PLOTS=1`
+
 ## Required Data (not versioned)
 
 Create this local layout:

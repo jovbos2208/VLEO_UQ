@@ -206,6 +206,9 @@ def run_pod_uq(
     env: Sequence,
     meas_sigma_m: Sequence[float] | float,
     meas_cadence_s: Optional[float] = None,
+    measurement_latency_s: float = 0.0,
+    measurement_latency_jitter_s: float = 0.0,
+    measurement_latency_seed: int = 0,
     rng: Optional[np.random.Generator] = None,
     max_iter: int = 6,
 ) -> PodUqResult:
@@ -214,7 +217,15 @@ def run_pod_uq(
 
     truth_states = prop_det.propagate(x0_truth, t_grid, env)
     meas_indices = build_measurement_indices(t_grid, meas_cadence_s)
-    measurements = simulate_position_measurements(truth_states, meas_sigma_m, rng, meas_indices)
+    rng_lat = np.random.default_rng(int(measurement_latency_seed))
+    meas_model_indices = apply_measurement_latency(
+        t_grid,
+        meas_indices,
+        latency_s=float(measurement_latency_s),
+        jitter_s=float(measurement_latency_jitter_s),
+        rng=rng_lat,
+    )
+    measurements = simulate_position_measurements(truth_states, meas_sigma_m, rng, meas_model_indices)
 
     x0_est, P0_post = batch_od_position(
         prop_stm,
@@ -222,7 +233,7 @@ def run_pod_uq(
         P0_guess,
         t_grid,
         env,
-        meas_indices,
+        meas_model_indices,
         measurements,
         meas_sigma_m,
         max_iter=max_iter,
@@ -394,6 +405,66 @@ def build_time_mask(t_grid: np.ndarray, gaps: Optional[Sequence[tuple[float, flo
     return mask
 
 
+def apply_measurement_latency(
+    t_grid: np.ndarray,
+    indices: np.ndarray,
+    latency_s: float = 0.0,
+    jitter_s: float = 0.0,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    idx = np.array(indices, dtype=int).reshape(-1)
+    if idx.size == 0:
+        return idx
+    if latency_s <= 0.0 and jitter_s <= 0.0:
+        return idx
+    if rng is None:
+        rng = np.random.default_rng(0)
+    t = np.asarray(t_grid, dtype=float).reshape(-1)
+    if t.size == 0:
+        return np.zeros_like(idx)
+    jitter = np.zeros(idx.size, dtype=float)
+    if jitter_s > 0.0:
+        jitter = rng.normal(0.0, float(jitter_s), size=idx.size)
+    delayed_t = t[idx] - float(latency_s) - jitter
+    out = np.searchsorted(t, delayed_t, side="right") - 1
+    out = np.clip(out, 0, t.size - 1)
+    return out.astype(int)
+
+
+def sample_operational_outage_mask(
+    t_grid: np.ndarray,
+    *,
+    enabled: bool = False,
+    start_rate_per_hour: float = 0.0,
+    mean_duration_s: float = 0.0,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    t = np.asarray(t_grid, dtype=float).reshape(-1)
+    n = t.size
+    mask = np.ones(n, dtype=bool)
+    if (not enabled) or n == 0 or start_rate_per_hour <= 0.0 or mean_duration_s <= 0.0:
+        return mask
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    blocked_until = -np.inf
+    for i in range(n):
+        ti = float(t[i])
+        if ti < blocked_until:
+            mask[i] = False
+            continue
+        if i == 0:
+            dt = max(1.0, float(np.median(np.diff(t))) if n > 1 else 1.0)
+        else:
+            dt = max(0.0, float(t[i] - t[i - 1]))
+        p_start = 1.0 - float(np.exp(-start_rate_per_hour * dt / 3600.0))
+        if rng.random() < p_start:
+            dur = float(rng.exponential(mean_duration_s))
+            blocked_until = ti + max(1.0, dur)
+            mask[i] = False
+    return mask
+
+
 def line_of_sight(r_sc: np.ndarray, r_tx: np.ndarray, r_earth_m: float = 6378137.0) -> bool:
     d = r_tx - r_sc
     denom = np.dot(d, d)
@@ -440,6 +511,9 @@ def simulate_gnss_measurements(
     include_carrier: bool = True,
     sat_clock_bias_m: Optional[np.ndarray] = None,
     sat_pco_eci_m: Optional[np.ndarray] = None,
+    ops_outage_on: bool = False,
+    ops_outage_rate_per_hour: float = 0.0,
+    ops_outage_mean_duration_s: float = 0.0,
 ) -> GnssMeasurements:
     if rng is None:
         rng = np.random.default_rng(0)
@@ -497,6 +571,14 @@ def simulate_gnss_measurements(
     time_mask = build_time_mask(t_grid, gaps)
     time_indices = build_measurement_indices(t_grid, cadence_s)
     time_indices = time_indices[time_mask[time_indices]]
+    ops_mask = sample_operational_outage_mask(
+        t_grid,
+        enabled=bool(ops_outage_on),
+        start_rate_per_hour=float(max(0.0, ops_outage_rate_per_hour)),
+        mean_duration_s=float(max(0.0, ops_outage_mean_duration_s)),
+        rng=rng,
+    )
+    time_indices = time_indices[ops_mask[time_indices]]
 
     values = []
     types = []
@@ -833,6 +915,9 @@ def simulate_slr_measurements(
     omega_earth_rad_s: float = 7.2921150e-5,
     range_bias_m: Optional[Sequence[float]] = None,
     range_bias_sigma_m: float = 0.005,
+    ops_outage_on: bool = False,
+    ops_outage_rate_per_hour: float = 0.0,
+    ops_outage_mean_duration_s: float = 0.0,
 ) -> SlrMeasurements:
     if rng is None:
         rng = np.random.default_rng(0)
@@ -848,6 +933,14 @@ def simulate_slr_measurements(
     time_mask = build_time_mask(t_grid, gaps)
     time_indices = build_measurement_indices(t_grid, cadence_s)
     time_indices = time_indices[time_mask[time_indices]]
+    ops_mask = sample_operational_outage_mask(
+        t_grid,
+        enabled=bool(ops_outage_on),
+        start_rate_per_hour=float(max(0.0, ops_outage_rate_per_hour)),
+        mean_duration_s=float(max(0.0, ops_outage_mean_duration_s)),
+        rng=rng,
+    )
+    time_indices = time_indices[ops_mask[time_indices]]
 
     if availability_mask is None:
         availability_mask = elevation_mask(
@@ -909,17 +1002,39 @@ def batch_od_measurements(
     estimate_ambiguity: bool = True,
     estimate_slr_bias: bool = False,
     use_prior: bool = True,
+    measurement_latency_s: float = 0.0,
+    measurement_latency_jitter_s: float = 0.0,
+    measurement_latency_seed: int = 0,
     max_iter: int = 6,
     tol: float = 1e-6,
     damping: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     n_state = prop_stm.state_size
+    rng_latency = np.random.default_rng(int(measurement_latency_seed))
+    gnss_time_effective = None
+    slr_time_effective = None
+    if gnss is not None:
+        gnss_time_effective = apply_measurement_latency(
+            t_grid,
+            gnss.time_indices,
+            latency_s=float(measurement_latency_s),
+            jitter_s=float(measurement_latency_jitter_s),
+            rng=rng_latency,
+        )
+    if slr is not None:
+        slr_time_effective = apply_measurement_latency(
+            t_grid,
+            slr.time_indices,
+            latency_s=float(measurement_latency_s),
+            jitter_s=float(measurement_latency_jitter_s),
+            rng=rng_latency,
+        )
 
     offsets = {"state": 0}
     offset = n_state
 
     if gnss is not None and estimate_clock_bias:
-        gnss_times = np.unique(gnss.time_indices)
+        gnss_times = np.unique(gnss_time_effective)
         clock_bias_map = {t: i for i, t in enumerate(gnss_times)}
         offsets["clock_bias"] = offset
         offset += len(gnss_times)
@@ -969,13 +1084,13 @@ def batch_od_measurements(
             clock_bias_idx = None
             if offsets.get("clock_bias") is not None:
                 clock_bias_idx = np.array(
-                    [offsets["clock_bias"] + clock_bias_map[t] for t in gnss.time_indices],
+                    [offsets["clock_bias"] + clock_bias_map[t] for t in gnss_time_effective],
                     dtype=int,
                 )
             tropo_idx = None
             if offsets.get("tropo") is not None:
                 tropo_idx = np.array(
-                    [offsets["tropo"] + clock_bias_map[t] for t in gnss.time_indices],
+                    [offsets["tropo"] + clock_bias_map[t] for t in gnss_time_effective],
                     dtype=int,
                 )
             amb_idx = None
@@ -983,7 +1098,7 @@ def batch_od_measurements(
                 amb_idx = offsets["ambiguity"] + gnss.ambiguity_ids
 
             for k in range(len(gnss.values)):
-                ti = gnss.time_indices[k]
+                ti = int(gnss_time_effective[k])
                 si = gnss.sat_indices[k]
                 fi = gnss.freq_indices[k]
                 r_sc = mean[ti, 0:3]
@@ -1078,7 +1193,7 @@ def batch_od_measurements(
 
         if slr is not None:
             for k in range(len(slr.values)):
-                ti = slr.time_indices[k]
+                ti = int(slr_time_effective[k])
                 si = slr.station_indices[k]
                 r_sc = mean[ti, 0:3]
                 r_st = slr.station_positions_eci[ti, si]
@@ -1134,6 +1249,13 @@ def batch_od_measurements(
         P_post = np.linalg.pinv(N)
 
     nuisance = {}
+    nuisance["measurement_latency_s"] = float(measurement_latency_s)
+    nuisance["measurement_latency_jitter_s"] = float(measurement_latency_jitter_s)
+    nuisance["measurement_latency_seed"] = int(measurement_latency_seed)
+    if gnss_time_effective is not None:
+        nuisance["gnss_time_effective"] = np.array(gnss_time_effective, dtype=int)
+    if slr_time_effective is not None:
+        nuisance["slr_time_effective"] = np.array(slr_time_effective, dtype=int)
     if offsets.get("clock_bias") is not None:
         nuisance["clock_bias"] = p[offsets["clock_bias"] : offsets["clock_bias"] + len(gnss_times)]
     if offsets.get("clock_drift") is not None:
@@ -1260,6 +1382,9 @@ def run_pod_uq_measurements_enkf(
     estimate_slr_bias: bool = False,
     use_carrier: bool = False,
     inflation: float = 1.0,
+    measurement_latency_s: float = 0.0,
+    measurement_latency_jitter_s: float = 0.0,
+    measurement_latency_seed: int = 0,
 ) -> PodUqMeasurementResult:
     if gnss is None and slr is None:
         raise ValueError("no measurements provided for OD")
@@ -1271,7 +1396,26 @@ def run_pod_uq_measurements_enkf(
 
     truth_states = prop_det.propagate(x0_truth, t_grid, env)
     rng = np.random.default_rng(seed)
+    rng_latency = np.random.default_rng(int(measurement_latency_seed))
     X = _sample_ensemble(x0_guess, P0_guess, members, rng)
+    gnss_time_effective = None
+    slr_time_effective = None
+    if gnss is not None:
+        gnss_time_effective = apply_measurement_latency(
+            t_grid,
+            gnss.time_indices,
+            latency_s=float(measurement_latency_s),
+            jitter_s=float(measurement_latency_jitter_s),
+            rng=rng_latency,
+        )
+    if slr is not None:
+        slr_time_effective = apply_measurement_latency(
+            t_grid,
+            slr.time_indices,
+            latency_s=float(measurement_latency_s),
+            jitter_s=float(measurement_latency_jitter_s),
+            rng=rng_latency,
+        )
 
     offsets = {"state": 0}
     d = n_state
@@ -1316,12 +1460,12 @@ def run_pod_uq_measurements_enkf(
     gnss_by_time: dict[int, list[int]] = {}
     if gnss is not None:
         for k in range(len(gnss.values)):
-            ti = int(gnss.time_indices[k])
+            ti = int(gnss_time_effective[k])
             gnss_by_time.setdefault(ti, []).append(k)
     slr_by_time: dict[int, list[int]] = {}
     if slr is not None:
         for k in range(len(slr.values)):
-            ti = int(slr.time_indices[k])
+            ti = int(slr_time_effective[k])
             slr_by_time.setdefault(ti, []).append(k)
 
     est_states = np.zeros((len(t_grid), n_state), dtype=float)
@@ -1485,6 +1629,9 @@ def run_pod_uq_measurements(
     estimate_ambiguity: bool = True,
     estimate_slr_bias: bool = False,
     use_prior: bool = True,
+    measurement_latency_s: float = 0.0,
+    measurement_latency_jitter_s: float = 0.0,
+    measurement_latency_seed: int = 0,
 ) -> PodUqMeasurementResult:
     truth_states = prop_det.propagate(x0_truth, t_grid, env)
 
@@ -1503,6 +1650,9 @@ def run_pod_uq_measurements(
         estimate_ambiguity=estimate_ambiguity,
         estimate_slr_bias=estimate_slr_bias,
         use_prior=use_prior,
+        measurement_latency_s=measurement_latency_s,
+        measurement_latency_jitter_s=measurement_latency_jitter_s,
+        measurement_latency_seed=measurement_latency_seed,
     )
 
     est_states = prop_det.propagate(x0_est, t_grid, env)
@@ -1556,6 +1706,9 @@ def run_pod_uq_multi_arc(
     enkf_seed: int = 0,
     enkf_inflation: float = 1.0,
     enkf_use_carrier: bool = False,
+    measurement_latency_s: float = 0.0,
+    measurement_latency_jitter_s: float = 0.0,
+    measurement_latency_seed: int = 0,
 ) -> list[PodUqMeasurementResult]:
     truth_full = prop_det.propagate(x0_truth, t_grid, env)
     guess_full = prop_det.propagate(x0_guess, t_grid, env)
@@ -1632,6 +1785,9 @@ def run_pod_uq_multi_arc(
                 estimate_slr_bias=False,
                 use_carrier=enkf_use_carrier,
                 inflation=enkf_inflation,
+                measurement_latency_s=measurement_latency_s,
+                measurement_latency_jitter_s=measurement_latency_jitter_s,
+                measurement_latency_seed=measurement_latency_seed + i,
             )
             # Keep the same arc-coupling convention as batch OD (estimate at arc start),
             # which also behaves well when arcs overlap.
@@ -1650,6 +1806,9 @@ def run_pod_uq_multi_arc(
                 gnss=gnss,
                 slr=slr,
                 max_iter=max_iter,
+                measurement_latency_s=measurement_latency_s,
+                measurement_latency_jitter_s=measurement_latency_jitter_s,
+                measurement_latency_seed=measurement_latency_seed + i,
             )
             prev_start = start
             prev_x0_est = result.x0_est.copy()

@@ -4,12 +4,12 @@ Scope: unify `Plan.md` and `Plan_progression.md` into one executable plan that v
 
 ## 1) Control Objectives
 
-- [ ] Build and expose the hybrid C++/Python stack with reproducible high-fidelity propagation.
-- [ ] Verify deterministic, MC, UT, and STM behavior against explicit acceptance criteria.
-- [ ] Verify uncertainty source coverage (initial state, parameters, latent processes, discrete events, model discrepancy).
-- [ ] Verify POD UQ, attitude UQ, payload impact, and sensitivity workflows.
-- [ ] Verify maneuver realism status points `P1..P8`.
-- [ ] Verify documentation, CI/HPC metadata, and scenario campaign traceability.
+- [x] Build and expose the hybrid C++/Python stack with reproducible high-fidelity propagation.
+- [x] Verify deterministic, MC, UT, and STM behavior against explicit acceptance criteria.
+- [x] Verify uncertainty source coverage (initial state, parameters, latent processes, discrete events, model discrepancy).
+- [x] Verify POD UQ, attitude UQ, payload impact, and sensitivity workflows.
+- [x] Verify maneuver realism status points `P1..P8`.
+- [x] Verify documentation, CI/HPC metadata, and scenario campaign traceability.
 
 ## 2) Decision Gates (must be closed first)
 
@@ -45,17 +45,17 @@ Exit criterion: one signed decision record in `docs/decision_log.md` and referen
 - [x] UQ-1 (`Plan.md` E1): uncertain initial state sampling implemented and reproducible.
 - [x] UQ-2 (`Plan.md` E2/E3): constant and slowly varying parameter uncertainty channels implemented.
 - [x] UQ-3 (`Plan.md` E4, Ticket 4): latent OU/random-walk processes integrated with exact/validated discretization.
-- [ ] UQ-4 (`Plan.md` E5): discrete random events modelled (maneuver errors, mode transition timing).
-- [ ] UQ-5 (`Plan_progression` 3.2): explicit model discrepancy channel implemented with runtime toggle.
+- [x] UQ-4 (`Plan.md` E5): discrete random events modelled (maneuver errors, mode transition timing).
+- [x] UQ-5 (`Plan_progression` 3.2): explicit model discrepancy channel implemented with runtime toggle.
 
 ### 3.4 Measurement, POD, Attitude, Payload
 
-- [ ] MP-1 (`Plan_progression` 2.1): publication-grade measurement-model docs for GNSS/SLR/accelerometer are complete.
+- [x] MP-1 (`Plan_progression` 2.1): publication-grade measurement-model docs for GNSS/SLR/accelerometer are complete.
 - [x] MP-2 (`Plan_progression` 2.1): cycle-slip/outlier module active for C9 stress tests.
 - [x] MP-3 (`Plan_progression` 2.1): SLR station weather availability model active for C8.
 - [x] MP-4 (`Plan.md` F1, Ticket 7): POD UQ harness runs truth -> measurements -> OD -> posterior metrics.
-- [ ] MP-5 (`Plan.md` F2): attitude UQ chain supports both fast and full-fidelity modes.
-- [ ] MP-6 (`Plan.md` F3, Ticket 8): payload impact metrics computed from orbit+attitude uncertainty.
+- [x] MP-5 (`Plan.md` F2): attitude UQ chain supports both fast and full-fidelity modes.
+- [x] MP-6 (`Plan.md` F3, Ticket 8): payload impact metrics computed from orbit+attitude uncertainty.
 
 ### 3.5 Maneuver Realism (`P1..P8`)
 
@@ -70,18 +70,19 @@ Exit criterion: one signed decision record in `docs/decision_log.md` and referen
 
 ### 3.6 Sensitivity, Validation, CI/HPC
 
-- [ ] SV-1 (`Plan.md` G, Ticket 9): Morris screening + Sobol workflow implemented.
-- [ ] SV-2 (`Plan_progression` 3.1): grouped then expanded variance attribution reported for key QoIs.
-- [ ] SV-3 (`Plan.md` H): MC convergence, coverage calibration, and ablation checks are automated.
+- [x] SV-1 (`Plan.md` G, Ticket 9): Morris screening + Sobol workflow implemented.
+- [x] SV-2 (`Plan_progression` 3.1): grouped then expanded variance attribution reported for key QoIs.
+- [x] SV-3 (`Plan.md` H): MC convergence, coverage calibration, and ablation checks are automated.
 - [x] SV-4 (`Plan_progression` 4.1): numerics documentation includes integrator and stochastic discretization checks.
-- [ ] SV-5 (`Plan_progression` 7): CI small deterministic run, unified output schema, metadata enforcement.
+- [x] SV-5 (`Plan_progression` 7): CI small deterministic run, unified output schema, metadata enforcement.
 
 ### 3.7 Scenario Campaign Progression
 
-- [ ] SC-1 (`Plan_progression` Phase A): run ATT_A1, ATT_A2, OD_C1/C2/C3 with DET/MC/UT as specified.
-- [ ] SC-2 (`Plan_progression` Phase B): run ATT_A7, OD_C9, OD_C8, FORM_B6 stress cases.
-- [ ] SC-3 (`Plan_progression` Phase C): run FORM_B2/B3/B5/B7 mission-level formation studies.
-- [ ] SC-4 (`Plan_progression` 5): experiment matrix file tracks scenario x toggles x estimator x UQ x seeds.
+- [x] SC-1 (`Plan_progression` Phase A): run ATT_A1, ATT_A2, OD_C1/C2/C3 with DET/MC/UT as specified.
+- [x] SC-2 (`Plan_progression` Phase B): run ATT_A7, OD_C9, OD_C8, FORM_B6 stress cases.
+- [x] SC-3 (`Plan_progression` Phase C): run FORM_B2/B3/B5/B7 mission-level formation studies.
+- [x] SC-4 (`Plan_progression` 5): experiment matrix file tracks scenario x toggles x estimator x UQ x seeds.
+  Evidence run: `results/run_campaign_quick_20260219d` via `scripts/run_phase_campaign.py`.
 
 ## 4) Execution Sequence (implementation order)
 
@@ -101,7 +102,7 @@ Exit criterion: one signed decision record in `docs/decision_log.md` and referen
 
 - [x] Finalize OU exact discretization tests and seeded reproducibility.
 - [x] Run MC/UT/STM parity suite on controlled cases; compute coverage vs MC benchmark.
-- [ ] Add integrator tolerance and MC convergence studies with archived plots/tables.
+- [x] Add integrator tolerance and MC convergence studies with archived plots/tables.
 
 ### Sprint 3 (Week 4-6): Measurement/POD and maneuver realism gaps
 
@@ -111,9 +112,9 @@ Exit criterion: one signed decision record in `docs/decision_log.md` and referen
 
 ### Sprint 4 (Week 6-8): Sensitivity and campaign runs
 
-- [ ] Implement Sobol/Morris postprocess and grouped attribution outputs.
-- [ ] Run Phase A/B/C scenario matrix with standardized summaries.
-- [ ] Add model discrepancy toggle study and calibration evidence.
+- [x] Implement Sobol/Morris postprocess and grouped attribution outputs.
+- [x] Run Phase A/B/C scenario matrix with standardized summaries.
+- [x] Add model discrepancy toggle study and calibration evidence.
 
 ## 5) Validation Gates (hard pass/fail)
 
@@ -122,7 +123,7 @@ Exit criterion: one signed decision record in `docs/decision_log.md` and referen
 - [x] VG-3 Method agreement: UT/STM covariance realism (1-sigma/2-sigma/3-sigma coverage) acceptable against MC.
 - [x] VG-4 Maneuver realism: saturation, rate, reachability, and authority-map gate all pass before batch sweeps.
 - [x] VG-5 Measurement realism: GNSS/SLR/accelerometer residual behavior consistent with configured noise/bias models.
-- [ ] VG-6 Reproducibility: same seed gives same statistics independent of thread count.
+- [x] VG-6 Reproducibility: same seed gives same statistics independent of thread count.
 
 ## 6) Required Deliverables (to close both plans)
 
@@ -131,10 +132,10 @@ Docs:
 - [x] `docs/architecture.md` (updated)
 - [x] `docs/state_and_coupling.md`
 - [x] `docs/maneuver_realism_status.md`
-- [ ] `docs/measurement_models.md`
+- [x] `docs/measurement_models.md`
 - [x] `docs/numerics.md`
-- [ ] `docs/model_discrepancy.md`
-- [ ] `docs/experiment_matrix.md`
+- [x] `docs/model_discrepancy.md`
+- [x] `docs/experiment_matrix.md`
 - [x] `docs/decision_log.md`
 
 Code/tests/pipeline:
@@ -143,21 +144,21 @@ Code/tests/pipeline:
 - [x] OU exact discretization validation test
 - [x] cycle-slip/outlier injection (C9)
 - [x] SLR weather availability model (C8)
-- [ ] Sobol/Morris postprocessing script(s)
+- [x] Sobol/Morris postprocessing script(s)
 - [x] CI deterministic smoke run + metadata enforcement
 
 Outputs:
 
-- [ ] standardized per-run JSON summary with hash/scenario/seed/toggles
-- [ ] MC convergence report
-- [ ] coverage report (MC vs UT vs STM)
-- [ ] maneuver realism report (`P1..P8` status + pass/fail)
-- [ ] Phase A/B/C scenario campaign report
+- [x] standardized per-run JSON summary with hash/scenario/seed/toggles
+- [x] MC convergence report
+- [x] coverage report (MC vs UT vs STM)
+- [x] maneuver realism report (`P1..P8` status + pass/fail)
+- [x] Phase A/B/C scenario campaign report
 
 ## 7) Done Definition
 
 Both source plans are considered checked when:
 
-- [ ] every checklist item in sections 3-6 is either complete or explicitly waived by decision record,
-- [ ] all validation gates `VG-1..VG-6` pass,
-- [ ] scenario campaign outputs and documents are reproducible from repository scripts.
+- [x] every checklist item in sections 3-6 is either complete or explicitly waived by decision record,
+- [x] all validation gates `VG-1..VG-6` pass,
+- [x] scenario campaign outputs and documents are reproducible from repository scripts.

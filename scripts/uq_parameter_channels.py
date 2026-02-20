@@ -13,6 +13,20 @@ _SLOW_PARAM_DEFAULTS = {
     "rho_bias_sigma": 0.08,
     "wind_tau_s": 900.0,
     "wind_sigma": 10.0,
+    "j2_earth": 1.08262668e-3,
+    "j3_earth": -2.53215306e-6,
+    "j4_earth": -1.61098761e-6,
+    "sun_ephemeris_scale": 1.0,
+    "moon_ephemeris_scale": 1.0,
+    "srp_cr": 1.2,
+    "srp_area_m2": 0.2,
+    "albedo_ir_cr": 1.0,
+    "albedo_ir_area_m2": 0.2,
+    "albedo_pressure_n_m2": 1.2e-6,
+    "earth_ir_pressure_n_m2": 1.0e-6,
+    "tide_loading_scale": 1.0,
+    "magnetic_field_scale": 1.0,
+    "residual_dipole_scale": 1.0,
 }
 
 _SLOW_PARAM_SIGMA_KEYS = {
@@ -22,6 +36,25 @@ _SLOW_PARAM_SIGMA_KEYS = {
     "rho_bias_sigma": "uq_rho_bias_sigma_rel_sigma",
     "wind_tau_s": "uq_wind_tau_rel_sigma",
     "wind_sigma": "uq_wind_sigma_rel_sigma",
+    "j2_earth": "uq_j2_rel_sigma",
+    "j3_earth": "uq_j3_rel_sigma",
+    "j4_earth": "uq_j4_rel_sigma",
+    "sun_ephemeris_scale": "uq_sun_ephemeris_scale_rel_sigma",
+    "moon_ephemeris_scale": "uq_moon_ephemeris_scale_rel_sigma",
+    "srp_cr": "uq_srp_cr_rel_sigma",
+    "srp_area_m2": "uq_srp_area_rel_sigma",
+    "albedo_ir_cr": "uq_albedo_ir_cr_rel_sigma",
+    "albedo_ir_area_m2": "uq_albedo_ir_area_rel_sigma",
+    "albedo_pressure_n_m2": "uq_albedo_pressure_rel_sigma",
+    "earth_ir_pressure_n_m2": "uq_earth_ir_pressure_rel_sigma",
+    "tide_loading_scale": "uq_tide_loading_scale_rel_sigma",
+    "magnetic_field_scale": "uq_magnetic_field_scale_rel_sigma",
+    "residual_dipole_scale": "uq_residual_dipole_scale_rel_sigma",
+}
+
+_SIGNED_OVERRIDE_KEYS = {
+    "j3_earth",
+    "j4_earth",
 }
 
 
@@ -67,7 +100,14 @@ def apply_uq_parameter_channels(
     if mass_base is not None and mass_base > 0.0:
         mass_sigma_abs = _as_finite_float(out.get("uq_mass_sigma_kg")) or 0.0
         mass_rel_sigma = _as_finite_float(out.get("uq_mass_rel_sigma")) or 0.0
-        mass_sigma = abs(float(mass_sigma_abs)) + abs(float(mass_rel_sigma)) * mass_base
+        fuel_sigma_abs = _as_finite_float(out.get("uq_fuel_gauging_sigma_kg")) or 0.0
+        fuel_rel_sigma = _as_finite_float(out.get("uq_fuel_gauging_rel_sigma")) or 0.0
+        mass_sigma = (
+            abs(float(mass_sigma_abs))
+            + abs(float(mass_rel_sigma)) * mass_base
+            + abs(float(fuel_sigma_abs))
+            + abs(float(fuel_rel_sigma)) * mass_base
+        )
         if mass_sigma > 0.0:
             mass_draw = max(1e-6, float(rng.normal(mass_base, mass_sigma)))
             out["spacecraft_mass_kg"] = mass_draw
@@ -76,6 +116,8 @@ def apply_uq_parameter_channels(
                 "value": float(mass_draw),
                 "sigma_abs": float(mass_sigma_abs),
                 "sigma_rel": float(mass_rel_sigma),
+                "fuel_sigma_abs": float(fuel_sigma_abs),
+                "fuel_sigma_rel": float(fuel_rel_sigma),
             }
 
     inertia_rel_sigma = abs(float(_as_finite_float(out.get("uq_inertia_rel_sigma")) or 0.0))
@@ -114,7 +156,9 @@ def apply_uq_parameter_channels(
         if base is None:
             base = _SLOW_PARAM_DEFAULTS[key]
         scale = _draw_lognormal_scale(rng, rel_sigma)
-        val = max(1e-12, float(base * scale))
+        val = float(base * scale)
+        if key not in _SIGNED_OVERRIDE_KEYS:
+            val = max(1e-12, val)
         overrides[key] = val
         draw[key] = {
             "base": float(base),
@@ -136,6 +180,12 @@ def apply_propagator_overrides(cfg, overrides: dict | None) -> None:
     for key, value in overrides.items():
         if not hasattr(cfg, key):
             continue
+        if isinstance(value, (list, tuple, np.ndarray)):
+            try:
+                setattr(cfg, key, np.asarray(value, dtype=float))
+                continue
+            except Exception:
+                continue
         v = _as_finite_float(value)
         if v is None:
             continue

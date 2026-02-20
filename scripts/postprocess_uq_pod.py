@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.run_case_studies import plot_case, save_json
+from scripts.model_discrepancy import apply_density_model_discrepancy
+from scripts.payload_impact import compute_payload_impact_proxy_from_stats
+from scripts.summary_metadata import build_run_metadata
 import gc
 
 
@@ -103,6 +106,7 @@ def run_pod(
     pod_slr_weather_seed: int | None = None,
     spacecraft_mass_kg: float | None = None,
     spacecraft_inertia_kgm2: list[float] | None = None,
+    scenario: dict | None = None,
 ):
     from vleo_uq import (
         default_ilrs_stations,
@@ -120,6 +124,13 @@ def run_pod(
     from scripts.run_case_studies import synthetic_gnss_positions
     import datetime as dt
     rng = np.random.default_rng(seed)
+    scenario_dict = scenario if isinstance(scenario, dict) else {}
+    latency_s = float(scenario_dict.get("pod_measurement_latency_s", 0.0))
+    latency_jitter_s = float(scenario_dict.get("pod_measurement_latency_jitter_s", 0.0))
+    latency_seed = int(scenario_dict.get("pod_measurement_latency_seed", seed))
+    ops_outage_on = bool(scenario_dict.get("pod_ops_outage_on", False))
+    ops_outage_rate_per_hour = float(scenario_dict.get("pod_ops_outage_rate_per_hour", 0.0))
+    ops_outage_mean_duration_s = float(scenario_dict.get("pod_ops_outage_mean_duration_s", 0.0))
     gnss_positions = None
     sat_clock_bias_m = None
     if pod_sp3:
@@ -162,6 +173,9 @@ def run_pod(
         carrier_outlier_prob=float(pod_gnss_carrier_outlier_prob),
         carrier_outlier_sigma_scale=float(pod_gnss_carrier_outlier_sigma_scale),
         sat_clock_bias_m=sat_clock_bias_m,
+        ops_outage_on=ops_outage_on,
+        ops_outage_rate_per_hour=ops_outage_rate_per_hour,
+        ops_outage_mean_duration_s=ops_outage_mean_duration_s,
     )
     print(
         f"[pod] gnss generated cadence_s={gnss_cadence_s:.1f} meas={int(gnss.values.shape[0])} "
@@ -192,6 +206,9 @@ def run_pod(
             rng=rng,
             sigma_m=0.01,
             availability_mask=slr_mask,
+            ops_outage_on=ops_outage_on,
+            ops_outage_rate_per_hour=ops_outage_rate_per_hour,
+            ops_outage_mean_duration_s=ops_outage_mean_duration_s,
         )
     arcs = []
     step = max(1, int(round((pod_arc_s - pod_overlap_s) / (t_grid[1] - t_grid[0]))))
@@ -277,6 +294,7 @@ def run_pod(
             temperature_K=1000.0,
             particle_mass_kg=28.0 * 1.6605390689252e-27,
         )
+    apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(seed))
 
     # Streaming arc processing: summarize and release each arc immediately
     # to keep memory bounded on long OD scenarios.
@@ -356,6 +374,9 @@ def run_pod(
                 estimate_slr_bias=False,
                 use_carrier=bool(pod_enkf_use_carrier),
                 inflation=float(pod_enkf_inflation),
+                measurement_latency_s=latency_s,
+                measurement_latency_jitter_s=latency_jitter_s,
+                measurement_latency_seed=latency_seed + i,
             )
         else:
             arc_res = run_pod_uq_measurements(
@@ -369,6 +390,9 @@ def run_pod(
                 gnss=gnss_slice,
                 slr=slr_slice,
                 max_iter=6,
+                measurement_latency_s=latency_s,
+                measurement_latency_jitter_s=latency_jitter_s,
+                measurement_latency_seed=latency_seed + i,
             )
         summary = summarize_arc_metrics(arc_res, t_grid=t_arc)
         summary["arc_index"] = i
@@ -478,6 +502,15 @@ def main() -> None:
                 summary = {
                     "case": obj,
                     "particles": int(scenario.get("particles", 0)),
+                    "ut_mean_err": float(np.linalg.norm(mc_mean[-1] - ut_mean[-1])),
+                    "stm_mean_err": float(np.linalg.norm(mc_mean[-1] - stm_mean[-1])),
+                    "ut_cov_rel_err": float(np.linalg.norm(mc_cov_final - ut_cov[-1]) / max(np.linalg.norm(mc_cov_final), 1e-12)),
+                    "stm_cov_rel_err": float(np.linalg.norm(mc_cov_final - stm_cov[-1]) / max(np.linalg.norm(mc_cov_final), 1e-12)),
+                    "uq_parameter_draw": dict(scenario.get("uq_parameter_draw", {}))
+                    if isinstance(scenario.get("uq_parameter_draw"), dict)
+                    else {},
+                    "payload_impact": compute_payload_impact_proxy_from_stats(mc_mean=mc_mean, mc_std=mc_std),
+                    "metadata": build_run_metadata(scenario, args.seed + idx),
                 }
                 save_json(case_dir / "summary.json", summary)
                 if args.plot:
@@ -556,6 +589,7 @@ def main() -> None:
                             scenario.get("pod_slr_weather_p_stay_blocked", args.pod_slr_weather_p_stay_blocked)
                         ),
                         pod_slr_weather_seed=scenario.get("pod_slr_weather_seed", args.pod_slr_weather_seed),
+                        scenario=scenario,
                     )
                     pod_dir = case_dir / "pod"
                     pod_dir.mkdir(parents=True, exist_ok=True)
@@ -608,6 +642,15 @@ def main() -> None:
             summary = {
                 "case": name,
                 "particles": int(scenario.get("particles", 0)),
+                "ut_mean_err": float(np.linalg.norm(mc_mean[-1] - ut_mean[-1])),
+                "stm_mean_err": float(np.linalg.norm(mc_mean[-1] - stm_mean[-1])),
+                "ut_cov_rel_err": float(np.linalg.norm(mc_cov_final - ut_cov[-1]) / max(np.linalg.norm(mc_cov_final), 1e-12)),
+                "stm_cov_rel_err": float(np.linalg.norm(mc_cov_final - stm_cov[-1]) / max(np.linalg.norm(mc_cov_final), 1e-12)),
+                "uq_parameter_draw": dict(scenario.get("uq_parameter_draw", {}))
+                if isinstance(scenario.get("uq_parameter_draw"), dict)
+                else {},
+                "payload_impact": compute_payload_impact_proxy_from_stats(mc_mean=mc_mean, mc_std=mc_std),
+                "metadata": build_run_metadata(scenario, args.seed),
             }
             save_json(case_dir / "summary.json", summary)
             if args.plot:
@@ -684,6 +727,7 @@ def main() -> None:
                         scenario.get("pod_slr_weather_p_stay_blocked", args.pod_slr_weather_p_stay_blocked)
                     ),
                     pod_slr_weather_seed=scenario.get("pod_slr_weather_seed", args.pod_slr_weather_seed),
+                    scenario=scenario,
                 )
                 pod_dir = case_dir / "pod"
                 pod_dir.mkdir(parents=True, exist_ok=True)

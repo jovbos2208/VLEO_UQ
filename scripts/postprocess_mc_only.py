@@ -10,8 +10,10 @@ import numpy as np
 
 try:
     from scripts.summary_metadata import build_run_metadata
+    from scripts.payload_impact import compute_payload_impact_proxy_from_stats
 except ModuleNotFoundError:
     from summary_metadata import build_run_metadata
+    from payload_impact import compute_payload_impact_proxy_from_stats
 
 
 def save_json(path: Path, payload: dict) -> None:
@@ -968,6 +970,10 @@ def write_mc_case_outputs(
     if isinstance(q_eff, np.ndarray):
         summary["attitude_metric_source"] = "per_particle_quaternions"
         summary["attitude_particles_used"] = int(q_eff.shape[1])
+    summary["payload_impact"] = compute_payload_impact_proxy_from_stats(
+        mc_mean=mean_eff,
+        mc_std=std_eff,
+    )
     if isinstance(maneuver_diag, dict):
         diag_save = {}
         for key, value in maneuver_diag.items():

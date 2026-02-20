@@ -1,1198 +1,884 @@
-# Scenario Catalog — VLEO UQ Satellite Aerodynamics Project
+````markdown
+# Scenario Catalog v2 — VLEO Aerodynamics, Attitude/Mission/Orbit Control & UQ Framework
 
-This file defines a **scenario catalog** for Codex to implement within the existing project.  
-Each scenario is described in a structured, implementation-oriented way:
+This catalog is designed to produce **meaningful Uncertainty Quantification (UQ)** results across four research areas:
 
-- **ID**: stable identifier (use as config `scenario_id`)
-- **Area**: research area (ATT = attitude/aero control, FORM = formation/mission control, OD = orbit determination/ground)
-- **Purpose**: what the run is meant to test
-- **Core outputs**: metrics to log
-- **Config schema**: a consistent block of fields Codex can map to your project’s config format
+- **ATT** — Attitude control (aerodynamic panels, torque authority, robustness)
+- **MIS** — Mission control (formation flying, operational constraints, contact gaps)
+- **ORB** — Orbit control (drag compensation, station keeping, maneuver execution under uncertainty)
+- **AERO** — Aerodynamics (GSI physics, geometry/model-form uncertainty, calibration/validation)
 
-> Notes for implementers (Codex):
-> - Treat each scenario as a *base config* that can be combined with environment / sensor / GSI toggles (see “Composable toggles”).
-> - Where numeric values are given, they are **defaults**; implementers may sweep them.
-> - “Optional” blocks can be omitted if unsupported; do not break the scenario ID list.
+Each scenario is a **base configuration** intended to be converted into runnable JSON by your existing catalog→config tooling (e.g., `catalog_to_case_config.py`). Numeric values are defaults (sweepable).
 
 ---
 
 ## Global conventions
 
-### Time and frames
-- Inertial frame: **GCRS/ECI**
-- Earth-fixed frame: **ITRS/ECEF**
-- Body frame: **B**
-- LVLH for relative motion: **R** (Hill frame)
-- Time scales: **UTC input**, convert internally using leap seconds + EOP as implemented.
+### Frames and time
+- Inertial: **GCRS/ECI**
+- Earth-fixed: **ITRS/ECEF**
+- Body: **B**
+- Relative motion: **LVLH/R** (Hill frame)
+- Time input: **UTC**, converted using your existing leap-second + EOP machinery.
 
 ### Default orbit family (unless overridden)
-- Type: near-circular VLEO
-- Altitude: **350 km**
-- Inclination: **51.6°**
-- e: **0.001**
-- RAAN/argp/M: as needed (randomized per seed if unspecified)
+- Near-circular VLEO
+- `alt_km: 350`
+- `e: 0.001`
+- `i_deg: 51.6`
 
-### Default vehicle family (unless overridden)
-- Mass: 5–20 kg (pick your platform; keep fixed per batch)
-- Geometry: panelized surface model with shadowing option
-- Actuation: aerodynamic panels/canted surfaces if scenario is ATT/FORM control
+### Default spacecraft family (unless overridden)
+- Mesh/panel geometry with shadowing
+- Aerodynamic hinge rotations enabled if requested
+- Mass/inertia fixed within a batch (unless explicitly swept)
 
-### Default environment model (unless overridden)
-- Neutral density model: one of {NRLMSISE-00, DTM2013, JB2008}
-- Winds: HWM14 or model used in code
-- Uncertainty: multiplicative density factor (log-domain), optionally OU
+### UQ philosophy
+Every scenario specifies:
+1) **QoIs** (quantities of interest) + decision metrics  
+2) **Uncertainty sources** to include (environment, GSI, geometry, sensors, numerics)  
+3) **Propagation method** (MC/UT/STM/MFMC) with recommended settings
 
 ---
 
-## Composable toggles (apply to many scenarios)
+## Composable toggles (orthogonal modifiers)
 
-Implement these as **orthogonal modifiers** so scenarios can be combined without duplicating definitions.
+Implement these toggles as additive blocks so scenarios combine without duplication.
 
-### ENV toggles (environment regimes)
-- **ENV_Q1_QUIET**: quiet indices, no stochastic density factor
-- **ENV_Q2_SCALE_UP**: fixed density scale factor (e.g., +50% in rho)
-- **ENV_Q3_SCALE_DOWN**: fixed density scale factor (e.g., −30% in rho)
-- **ENV_S1_OU_LOGRHO**: OU process in log-density factor  
-  - params: `tau_rho` [s], `sigma_logrho` [-]
-- **ENV_S2_STORM_PULSE**: transient density pulse (step or Gaussian bump) in log-density factor  
-  - params: `t0`, `duration`, `amplitude_logrho`
-- **ENV_W1_WIND_DET**: deterministic wind model only
-- **ENV_W2_WIND_OU_BIAS**: OU wind-bias state added (vector OU)
+### ENV toggles (thermosphere + winds)
+- **ENV_Q1_QUIET**: quiet indices; no stochastic density factor
+- **ENV_Q2_SCALE_UP**: fixed density factor (e.g., +50%)
+- **ENV_Q3_SCALE_DOWN**: fixed density factor (e.g., −30%)
+- **ENV_S1_OU_LOGRHO**: OU process in log-density factor `delta_logrho`
+  - params: `tau_rho_s`, `sigma_logrho`
+- **ENV_S2_STORM_PULSE**: transient density pulse in log-density
+  - params: `t0_s`, `duration_s`, `amplitude_logrho`, `shape: {step|gaussian}`
+- **ENV_W1_WIND_DET**: deterministic winds only
+- **ENV_W2_WIND_OU_BIAS**: OU wind-bias state `delta_w` (vector OU)
+- **ENV_COMP_O_N2**: composition perturbation/sensitivity mode (if available)
 
-### GSI toggles (gas-surface interaction / aero model)
-- **GSI_M1_MAXWELL**: Maxwell model with accommodation parameters
-- **GSI_C1_CLL**: CLL model (if implemented)
-- **GSI_P1_EST_ALPHAE**: estimate energy accommodation `alpha_E`
-- **GSI_P2_FIXED_ALPHAE**: fixed `alpha_E`
-- **GSI_T1_FIXED_TW**: fixed wall temperature `T_w`
-- **GSI_T2_DAYNIGHT_TW**: day/night (or sinusoidal) `T_w(t)` model
-- **GEO_S1_SHADOWING_ON**: self-shadowing / visibility logic enabled
-- **GEO_S2_SHADOWING_OFF**: no self-shadowing
-
-### SENSOR toggles (measurement channels)
-- **SENS_GNSS_RAW_DUAL**: raw GNSS code+carrier(+Doppler), dual-frequency
-- **SENS_GNSS_RAW_SINGLE**: raw GNSS code+carrier, single-frequency
-- **SENS_SLR**: SLR two-way range
-- **SENS_ACCEL**: onboard accelerometer channel (non-grav specific force)
-- **SENS_ATT_ST**: star tracker attitude measurement (quat)
-- **SENS_ATT_GYRO**: gyro angular-rate measurement
-
-### GROUND toggles (ground network)
-- **GRD_GLB_20**: global ~20-station ILRS-like network
-- **GRD_REG_EU**: Europe-only regional network
-- **GRD_ONE_MID**: single mid-lat station
-- **GRD_WEATHER_ON**: stochastic weather availability per station
-- **GRD_WEATHER_OFF**: always-available (visibility mask only)
-
-### EST toggles (estimation method)
-- **EST_EKF**: EKF sequential
-- **EST_ENKF**: ensemble Kalman filter
-- **EST_BLS**: batch least squares / MAP per arc
-- **EST_RTS**: RTS smoother post-processing (if available)
+### AERO/GSI toggles
+- **GSI_M1_MAXWELL**
+- **GSI_C1_CLL** (if implemented)
+- **GSI_S1_SENTMAN** (if implemented)
+- **GSI_TUTTAS** (if implemented)
+- **GSI_P1_EST_ALPHAE** / **GSI_P2_FIXED_ALPHAE**
+- **GSI_T1_FIXED_TW** / **GSI_T2_DAYNIGHT_TW**
+- **AERO_DISC_ON**: model discrepancy term enabled (bias process on drag accel/torque)
+- **GEO_SHADOW_ON** / **GEO_SHADOW_OFF**
+- **GEO_MISALIGN_ON**: panel normal/hinge misalignment uncertainty
+- **GEO_ROUGHNESS_ON**: aging/roughness surrogate (time-varying accommodation)
 
 ### CONTROL toggles
-- **CTL_NONE**: no control (pure propagation)
-- **CTL_ATT_AERO_RATE**: aero detumble / rate damping
-- **CTL_ATT_AERO_POINT**: aero pointing controller (nadir/target)
-- **CTL_DD_ALONGTRACK**: differential drag along-track formation keeping
-- **CTL_DD_REPHASE**: differential drag rephasing maneuver
+- **CTL_NONE**
+- **CTL_ATT_AERO_RATE**: detumble / rate damping
+- **CTL_ATT_AERO_POINT**: pointing (nadir/target)
+- **CTL_ATT_DRAG_MIN**: pointing with drag-min objective (multi-objective)
+- **CTL_DD_ALONGTRACK**: differential-drag formation keeping
+- **CTL_DD_REPHASE**: differential-drag rephasing maneuver
+- **CTL_ORB_DRAG_COMP**: orbit control by drag-area scheduling (no propellant)
+- **CTL_ORB_THRUST_SMA**: semi-major-axis hold by thrust pulses (if propulsion modeled)
+
+### SENSOR/EST toggles (for nav/OD-in-the-loop)
+- Sensors:
+  - **SENS_GNSS_RAW_DUAL**, **SENS_GNSS_RAW_SINGLE** (raw code+carrier; Doppler optional)
+  - **SENS_SLR**
+  - **SENS_ACCEL**
+  - **SENS_ATT_ST**, **SENS_ATT_GYRO**
+- Estimation:
+  - **EST_EKF**, **EST_ENKF**, **EST_BLS**, **EST_RTS**
+- Ground networks:
+  - **GRD_GLB_20**, **GRD_REG_EU**, **GRD_ONE_MID**
+  - **GRD_WEATHER_ON**, **GRD_WEATHER_OFF**
+
+### UQ/Propagation toggles
+- **PROP_DET**: deterministic run
+- **PROP_STM**: sensitivity/STM propagation
+- **PROP_UT**: unscented transform
+- **PROP_MC**: Monte Carlo
+- **PROP_MFMC**: multi-fidelity MC (if available)
+
+Suggested defaults:
+- UT: `alpha=1e-3, beta=2, kappa=0`
+- MC: `n_mc=50..300` depending on tail-risk QoIs
+- STM: ensure finite-diff steps and tolerances are documented and consistent
 
 ---
 
-## Scenario definitions
-
-Each scenario below uses this schema (fields can be mapped to your actual config keys):
+## Scenario schema
 
 ```yaml
 scenario_id: <string>
-area: <ATT|FORM|OD>
+area: <ATT|MIS|ORB|AERO>
 purpose: <string>
 duration_s: <float>
 dt_control_s: <float|null>
 dt_meas_s: <float|null>
+
 orbit:
   type: <kepler|eci_state>
-  a_km: <float|null>
   alt_km: <float|null>
   e: <float>
   i_deg: <float>
   raan_deg: <float|null>
   argp_deg: <float|null>
   M_deg: <float|null>
+
 spacecraft:
   mass_kg: <float>
-  inertia_kgm2: [Ixx,Iyy,Izz]        # or full tensor if supported
-  panels: <vehicle geometry reference>
+  inertia_kgm2: [Ixx,Iyy,Izz]
+  geometry_ref: <string>
+
 aero:
-  model: <project model name>
-  gsi_toggle: [ ... ]
+  model: <string>
+  toggles: [ ... ]
+
 environment:
-  model: <NRLMSISE00|DTM2013|JB2008|...>
-  env_toggle: [ ... ]
+  model: <string>
+  toggles: [ ... ]
+
 sensors:
-  sensor_toggle: [ ... ]
+  toggles: [ ... ]
+
 ground:
-  ground_toggle: [ ... ]
+  toggles: [ ... ]
+
 estimation:
-  est_toggle: [ ... ]
+  toggles: [ ... ]
+
 control:
-  control_toggle: <...>
+  toggles: [ ... ]
+
 uq:
-  method: <MC|UT|MC+UT|...>
+  propagator: <PROP_DET|PROP_MC|PROP_UT|PROP_STM|PROP_MFMC>
   n_mc: <int|null>
   ut_alpha: <float|null>
   ut_beta: <float|null>
   ut_kappa: <float|null>
+
 outputs:
+  qois: [ ... ]
   metrics: [ ... ]
-```
+````
 
 ---
 
 # ATTITUDE CONTROL SCENARIOS (ATT)
 
-## ATT_A1_DETUMBLE_AERO_ONLY
-- **Purpose:** detumble from high initial angular rates using aero torque authority only.
-- **Recommended toggles:** `ENV_S1_OU_LOGRHO`, `ENV_W2_WIND_OU_BIAS`, `GEO_S1_SHADOWING_ON`, `GSI_P1_EST_ALPHAE`
-- **Core outputs:** time-to-detumble, control effort, attitude error, torque margin.
+## ATT_01_DETUMBLE_AERO_ONLY
 
 ```yaml
-scenario_id: ATT_A1_DETUMBLE_AERO_ONLY
+scenario_id: ATT_01_DETUMBLE_AERO_ONLY
 area: ATT
-purpose: "Detumble from high initial rates using aerodynamic panels only."
-duration_s: 21600         # 6 hours
+purpose: "Detumble from high initial body rates using aerodynamic panels only; quantify time-to-detumble uncertainty."
+duration_s: 21600
 dt_control_s: 1.0
 dt_meas_s: 1.0
+
 orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GSI_T1_FIXED_TW, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_ATT_GYRO, SENS_ATT_ST]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_RATE
-uq:
-  method: "MC"
-  n_mc: 200
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GSI_T1_FIXED_TW, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_ATT_GYRO, SENS_ATT_ST]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_RATE]}
+uq: {propagator: PROP_MC, n_mc: 200}
+
 outputs:
-  metrics: [time_to_detumble, max_body_rate, rms_body_rate, rms_pointing_error, aero_torque_rms, aero_torque_p95]
+  qois: [time_to_detumble_s, max_body_rate, settling_time_s]
+  metrics: [rms_body_rate, p95_body_rate, aero_torque_p95, saturation_time_fraction]
 ```
 
-## ATT_A2_NADIR_POINTING
-- **Purpose:** maintain nadir pointing within a bounded error using aero control.
-- **Core outputs:** pointing error CDF, control effort distribution, drag penalty.
+## ATT_02_NADIR_POINTING_ROBUST
 
 ```yaml
-scenario_id: ATT_A2_NADIR_POINTING
+scenario_id: ATT_02_NADIR_POINTING_ROBUST
 area: ATT
-purpose: "Maintain nadir-pointing via aerodynamic panel control."
-duration_s: 43200         # 12 hours
-dt_control_s: 2.0
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "UT"
-  ut_alpha: 1e-3
-  ut_beta: 2.0
-  ut_kappa: 0.0
-outputs:
-  metrics: [rms_pointing_error, p95_pointing_error, mean_drag, drag_penalty_vs_uncontrolled, control_effort]
-```
-
-## ATT_A3_YAW_STEERING_WIND_UNC
-- **Purpose:** yaw steering / β-angle regulation under wind mismatch.
-- **Core outputs:** yaw error statistics, robustness vs wind OU parameters.
-
-```yaml
-scenario_id: ATT_A3_YAW_STEERING_WIND_UNC
-area: ATT
-purpose: "Yaw steering (beta-angle) regulation under wind uncertainty."
-duration_s: 21600
-dt_control_s: 2.0
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_W2_WIND_OU_BIAS, ENV_S1_OU_LOGRHO]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "MC"
-  n_mc: 100
-outputs:
-  metrics: [rms_yaw_error, p95_yaw_error, wind_bias_est_error, stability_margin_proxy]
-```
-
-## ATT_A4_SPIN_STAB_VS_3AXIS
-- **Purpose:** compare passive spin-stabilized mode vs 3-axis aero control (stability vs drag penalty vs OD impact).
-- **Core outputs:** stability metrics, drag increase, pointing performance.
-
-```yaml
-scenario_id: ATT_A4_SPIN_STAB_VS_3AXIS
-area: ATT
-purpose: "Compare passive spin stabilization vs 3-axis aerodynamic control."
+purpose: "Maintain nadir pointing under density/wind uncertainty; quantify pointing error distribution and drag penalty."
 duration_s: 43200
 dt_control_s: 2.0
 dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_GYRO, SENS_ATT_ST]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "MC"
-  n_mc: 100
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_ATT_ST, SENS_ATT_GYRO]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_POINT]}
+uq: {propagator: PROP_UT, ut_alpha: 1e-3, ut_beta: 2.0, ut_kappa: 0.0}
+
 outputs:
-  metrics: [rms_pointing_error, max_pointing_error, mean_drag, drag_penalty_vs_uncontrolled, stability_mode_indicator]
+  qois: [pointing_error_deg, drag_accel_mps2, torque_cmd_Nm]
+  metrics: [rms_pointing_error, p95_pointing_error, mean_drag_accel, drag_penalty_vs_uncontrolled]
 ```
 
-## ATT_A5_CONTROL_AUTHORITY_LIMIT_MAP
-- **Implementation note for Codex:** run a paired variant with `control_toggle: CTL_NONE` and an initial spin rate (e.g. 2–10 deg/s about max inertia axis) to represent “spin-stab”.
-- **Purpose:** identify regimes where aero torque becomes insufficient (authority / feasibility map).
-- **Core outputs:** feasible fraction, saturation time, failure modes.
+## ATT_03_YAW_STEERING_WIND_BIAS
 
 ```yaml
-scenario_id: ATT_A5_CONTROL_AUTHORITY_LIMIT_MAP
+scenario_id: ATT_03_YAW_STEERING_WIND_BIAS
 area: ATT
-purpose: "Map aerodynamic control authority limits across low-density/high-inertia cases."
+purpose: "Yaw steering/beta-angle regulation under wind-bias uncertainty; quantify robustness and coupling to wind states."
+duration_s: 21600
+dt_control_s: 2.0
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_W2_WIND_OU_BIAS, ENV_S1_OU_LOGRHO]}
+
+sensors: {toggles: [SENS_ATT_ST, SENS_ATT_GYRO]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_POINT]}
+uq: {propagator: PROP_MC, n_mc: 120}
+
+outputs:
+  qois: [yaw_error_deg, wind_bias_state, drag_accel_mps2]
+  metrics: [rms_yaw_error, p95_yaw_error, wind_bias_rmse, stability_margin_proxy]
+```
+
+## ATT_04_AUTHORITY_FEASIBILITY_MAP
+
+```yaml
+scenario_id: ATT_04_AUTHORITY_FEASIBILITY_MAP
+area: ATT
+purpose: "Torque authority feasibility under low density, high inertia, and geometry misalignment; quantify failure probability."
 duration_s: 14400
 dt_control_s: 1.0
 dt_meas_s: 1.0
+
 orbit: {type: kepler, alt_km: 450, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.25, 0.22, 0.40]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_Q3_SCALE_DOWN, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_GYRO, SENS_ATT_ST]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "MC"
-  n_mc: 80
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.25, 0.22, 0.40], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON, GEO_MISALIGN_ON]}
+environment: {model: DTM2013, toggles: [ENV_Q3_SCALE_DOWN, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_ATT_GYRO, SENS_ATT_ST]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_POINT]}
+uq: {propagator: PROP_MC, n_mc: 150}
+
 outputs:
-  metrics: [feasible_fraction, max_aero_torque, control_saturation_time_frac, p95_pointing_error, failure_mode_counts]
+  qois: [feasible_flag, torque_margin, pointing_error_deg]
+  metrics: [feasible_fraction, torque_margin_p05, saturation_time_fraction, failure_mode_counts]
 ```
 
-
-## ATT_A6_GSI_SENSITIVITY_CONTROL
-- **Purpose:** quantify control authority sensitivity to accommodation / wall temperature / model form.
-- **Implementation:** sweep `alpha_E`, `T_w`, and GSI model toggle.
+## ATT_05_ECLIPSE_THERMAL_MODE_SWITCH
 
 ```yaml
-scenario_id: ATT_A6_GSI_SENSITIVITY_CONTROL
+scenario_id: ATT_05_ECLIPSE_THERMAL_MODE_SWITCH
 area: ATT
-purpose: "Sensitivity of aero control authority to GSI parameters (alpha_E, T_w) and model selection."
-duration_s: 14400
-dt_control_s: 2.0
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GSI_T2_DAYNIGHT_TW, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_Q1_QUIET, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "MC"
-  n_mc: 150
-outputs:
-  metrics: [torque_authority_mean, torque_authority_p05, pointing_error_cdf, alphaE_posterior_std, Tw_effect_size]
-```
-
-## ATT_A7_ECLIPSE_THERMAL_TRANSITION
-- **Purpose:** robustness through eclipse/terminator thermal transitions (affecting reflected temperature).
-- **Core outputs:** transient pointing excursions, controller stability, torque spikes.
-
-```yaml
-scenario_id: ATT_A7_ECLIPSE_THERMAL_TRANSITION
-area: ATT
-purpose: "Controller robustness through eclipse/terminator transitions via time-varying wall temperature."
+purpose: "Robustness through eclipse/terminator transitions (time-varying Tw); quantify transient pointing excursions."
 duration_s: 32400
 dt_control_s: 2.0
 dt_meas_s: 1.0
+
 orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GSI_T2_DAYNIGHT_TW, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "UT"
-  ut_alpha: 1e-3
-  ut_beta: 2.0
-  ut_kappa: 0.0
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GSI_T2_DAYNIGHT_TW, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_ATT_ST, SENS_ATT_GYRO]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_POINT]}
+uq: {propagator: PROP_UT, ut_alpha: 1e-3, ut_beta: 2.0, ut_kappa: 0.0}
+
 outputs:
-  metrics: [max_pointing_excursion, settling_time_after_eclipse, torque_spike_p99, drag_variation]
+  qois: [max_pointing_excursion_deg, torque_spike_Nm, drag_variation]
+  metrics: [max_pointing_excursion_deg, settling_time_after_eclipse_s, torque_spike_p99, drag_variation_p95]
 ```
 
-## ATT_A8_ROLL_ROTATION_BASELINE
-- **Purpose:** baseline aerodynamic roll maneuver from zero attitude to half/full turn.
-- **Core outputs:** time to 180°/360° roll, overshoot, peak roll rate, cross-axis coupling.
+## ATT_06_DRAG_MIN_POINTING_TRADE
 
 ```yaml
-scenario_id: ATT_A8_ROLL_ROTATION_BASELINE
+scenario_id: ATT_06_DRAG_MIN_POINTING_TRADE
 area: ATT
-purpose: "Baseline roll maneuver: start at 0 deg attitude and execute aerodynamic roll half/full turn."
-duration_s: 5545          # ~1 orbit at 350 km
-dt_control_s: 1.0
+purpose: "Multi-objective control: pointing with drag minimization; quantify the trade-space under uncertain density and GSI."
+duration_s: 43200
+dt_control_s: 5.0
 dt_meas_s: 1.0
+
 orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_Q1_QUIET, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-maneuver:
-  initial_attitude_euler_deg_zyx: [0.0, 0.0, 0.0]
-  axis: roll
-  half_turn_deg: 180.0
-  full_turn_deg: 360.0
-  wing_initial_deg: 8.0
-uq:
-  method: "MC"
-  n_mc: 80
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_ATT_ST, SENS_ATT_GYRO]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_DRAG_MIN]}
+uq: {propagator: PROP_MC, n_mc: 120}
+
 outputs:
-  metrics: [time_to_roll_180_deg, time_to_roll_360_deg, overshoot_roll_360_deg, peak_roll_rate_deg_s, rms_pitch_excursion_deg, rms_yaw_excursion_deg]
-```
-
-## ATT_A9_PITCH_ROTATION_BASELINE
-- **Purpose:** baseline aerodynamic pitch maneuver from zero attitude to half/full turn.
-- **Core outputs:** time to 180°/360° pitch, overshoot, peak pitch rate, cross-axis coupling.
-
-```yaml
-scenario_id: ATT_A9_PITCH_ROTATION_BASELINE
-area: ATT
-purpose: "Baseline pitch maneuver: start at 0 deg attitude and execute aerodynamic pitch half/full turn."
-duration_s: 5545          # ~1 orbit at 350 km
-dt_control_s: 1.0
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_Q1_QUIET, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-maneuver:
-  initial_attitude_euler_deg_zyx: [0.0, 0.0, 0.0]
-  axis: pitch
-  half_turn_deg: 180.0
-  full_turn_deg: 360.0
-  wing_initial_deg: 8.0
-uq:
-  method: "MC"
-  n_mc: 80
-outputs:
-  metrics: [time_to_pitch_180_deg, time_to_pitch_360_deg, overshoot_pitch_360_deg, peak_pitch_rate_deg_s, rms_roll_excursion_deg, rms_yaw_excursion_deg]
-```
-
-## ATT_A10_YAW_ROTATION_BASELINE
-- **Purpose:** baseline aerodynamic yaw maneuver from zero attitude to half/full turn.
-- **Core outputs:** time to 180°/360° yaw, overshoot, peak yaw rate, cross-axis coupling.
-
-```yaml
-scenario_id: ATT_A10_YAW_ROTATION_BASELINE
-area: ATT
-purpose: "Baseline yaw maneuver: start at 0 deg attitude and execute aerodynamic yaw half/full turn."
-duration_s: 5545          # ~1 orbit at 350 km
-dt_control_s: 1.0
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_Q1_QUIET, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_ATT_ST, SENS_ATT_GYRO]
-ground: {ground_toggle: []}
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-maneuver:
-  initial_attitude_euler_deg_zyx: [0.0, 0.0, 0.0]
-  axis: yaw
-  half_turn_deg: 180.0
-  full_turn_deg: 360.0
-  wing_initial_deg: 8.0
-uq:
-  method: "MC"
-  n_mc: 80
-outputs:
-  metrics: [time_to_yaw_180_deg, time_to_yaw_360_deg, overshoot_yaw_360_deg, peak_yaw_rate_deg_s, rms_roll_excursion_deg, rms_pitch_excursion_deg]
+  qois: [pointing_error_deg, mean_drag_accel, alphaE_posterior]
+  metrics: [p95_pointing_error, mean_drag_accel, drag_reduction_vs_CTL_ATT_AERO_POINT, alphaE_posterior_std]
 ```
 
 ---
 
-# FORMATION / MISSION CONTROL SCENARIOS (FORM)
+# MISSION CONTROL SCENARIOS (MIS)
 
-## FORM_B1_SINGLE_DRAG_MANAGEMENT
-- **Purpose:** regulate mean decay rate / altitude loss by modulating effective drag.
-- **Core outputs:** altitude dispersion, mean semi-major axis decay, control schedule.
+## MIS_01_SINGLE_DRAG_MANAGEMENT
 
 ```yaml
-scenario_id: FORM_B1_SINGLE_DRAG_MANAGEMENT
-area: FORM
-purpose: "Single-satellite drag management via scheduling effective CdA."
-duration_s: 172800       # 48 hours
+scenario_id: MIS_01_SINGLE_DRAG_MANAGEMENT
+area: MIS
+purpose: "Single-satellite drag management (mission ops): regulate decay rate via attitude/area scheduling; quantify lifetime uncertainty."
+duration_s: 172800
 dt_control_s: 30.0
 dt_meas_s: 10.0
+
 orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []      # GNSS space-based, no ground network needed
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_ATT_AERO_POINT
-uq:
-  method: "MC"
-  n_mc: 100
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ORB_DRAG_COMP]}
+uq: {propagator: PROP_MC, n_mc: 100}
+
 outputs:
-  metrics: [delta_altitude, mean_da_dt, cdA_schedule, estimation_consistency, rho_scale_est_error]
+  qois: [delta_altitude_m, da_dt, lifetime_proxy]
+  metrics: [da_dt_p95, lifetime_proxy_p05, control_duty_cycle, estimator_consistency]
 ```
 
-## FORM_B2_ALONGTRACK_2SAT_DD_KEEPING
-- **Purpose:** 2-satellite along-track separation holding via differential drag.
-- **Core outputs:** separation error, control duty cycle, robustness vs density OU.
+## MIS_02_DIFF_DRAG_KEEPING_2SAT
 
 ```yaml
-scenario_id: FORM_B2_ALONGTRACK_2SAT_DD_KEEPING
-area: FORM
-purpose: "Two-satellite along-track formation keeping using differential drag."
-duration_s: 259200       # 72 hours
-dt_control_s: 60.0
-dt_meas_s: 10.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_ENKF]
-control:
-  control_toggle: CTL_DD_ALONGTRACK
-uq:
-  method: "MC"
-  n_mc: 80
-outputs:
-  metrics: [sep_error_rms, sep_error_p95, reconfig_time, duty_cycle, collision_margin_min]
-```
-
-
-
-
-## FORM_B3_LVLH_BOX_CONSTRAINT_3SAT
-- **Implementation note for Codex:** treat this as a **sweep scenario** over density scale (`ENV_Q3_SCALE_DOWN` magnitude), inertia scaling, and/or panel lever-arm scale.
-- **Purpose:** constrain relative motion in LVLH (bounded “box”) for 3 satellites using differential drag + passive dynamics.
-- **Core outputs:** box violation probability, min separation, reconfiguration events.
-
-```yaml
-scenario_id: FORM_B3_LVLH_BOX_CONSTRAINT_3SAT
-area: FORM
-purpose: "Maintain 3-satellite LVLH box constraints using differential drag."
+scenario_id: MIS_02_DIFF_DRAG_KEEPING_2SAT
+area: MIS
+purpose: "Two-satellite along-track formation keeping via differential drag; quantify separation error and constraint risk."
 duration_s: 259200
 dt_control_s: 60.0
 dt_meas_s: 10.0
+
 orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_ENKF]
-control:
-  control_toggle: CTL_DD_ALONGTRACK
-uq:
-  method: "MC"
-  n_mc: 60
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_ENKF]}
+
+control: {toggles: [CTL_DD_ALONGTRACK]}
+uq: {propagator: PROP_MC, n_mc: 80}
+
 outputs:
-  metrics: [box_violation_prob, lvhl_rms_error, min_inter_sat_range, reconfig_event_count, duty_cycle]
+  qois: [alongtrack_sep_m, control_schedule]
+  metrics: [sep_error_rms, sep_error_p95, duty_cycle, min_sep_margin]
 ```
 
-
-## FORM_B4_REPHASE_DIFFERENTIAL_DRAG
-- **Purpose:** re-phase along-track by a prescribed Δs without propellant.
-- **Core outputs:** time-to-target, overshoot probability, density bias sensitivity.
+## MIS_03_REPHASE_2SAT
 
 ```yaml
-scenario_id: FORM_B4_REPHASE_DIFFERENTIAL_DRAG
-area: FORM
-purpose: "Re-phase along-track separation using differential drag (no propellant)."
-duration_s: 432000       # 5 days
+scenario_id: MIS_03_REPHASE_2SAT
+area: MIS
+purpose: "Rephase along-track separation by prescribed delta_s using differential drag; quantify time-to-target and overshoot probability."
+duration_s: 432000
 dt_control_s: 120.0
 dt_meas_s: 10.0
+
 orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S2_STORM_PULSE, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_BLS]
-control:
-  control_toggle: CTL_DD_REPHASE
-uq:
-  method: "MC"
-  n_mc: 60
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S2_STORM_PULSE, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_BLS]}
+
+control: {toggles: [CTL_DD_REPHASE]}
+uq: {propagator: PROP_MC, n_mc: 60}
+
 outputs:
-  metrics: [time_to_target_sep, overshoot_prob, fuel_equivalent_metric, post_rephase_stability]
+  qois: [time_to_target_s, overshoot_flag]
+  metrics: [time_to_target_p50, overshoot_prob, post_rephase_stability]
 ```
 
-## FORM_B5_CLOSE_APPROACH_RISK
-- **Purpose:** quantify probability of violating minimum separation under worst-case environment uncertainty + measurement gaps.
-- **Core outputs:** P(min range < threshold), divergence probability, recovery time.
+## MIS_04_LVLH_BOX_3SAT
 
 ```yaml
-scenario_id: FORM_B5_CLOSE_APPROACH_RISK
-area: FORM
-purpose: "Close-approach risk under density/wind uncertainty and measurement gaps."
+scenario_id: MIS_04_LVLH_BOX_3SAT
+area: MIS
+purpose: "Three-satellite LVLH box constraint keeping; quantify box-violation probability and minimum separation under uncertainty."
+duration_s: 259200
+dt_control_s: 60.0
+dt_meas_s: 10.0
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_ENKF]}
+
+control: {toggles: [CTL_DD_ALONGTRACK]}
+uq: {propagator: PROP_MC, n_mc: 80}
+
+outputs:
+  qois: [box_violation_flag, min_inter_sat_range_m]
+  metrics: [box_violation_prob, lvhl_error_rms, min_inter_sat_range_p05]
+```
+
+## MIS_05_CLOSE_APPROACH_RISK
+
+```yaml
+scenario_id: MIS_05_CLOSE_APPROACH_RISK
+area: MIS
+purpose: "Close-approach risk in formation; quantify P(min_range < threshold) including tail sensitivity (requires higher MC)."
 duration_s: 172800
 dt_control_s: 60.0
 dt_meas_s: 10.0
+
 orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "JB2008"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_ENKF]
-control:
-  control_toggle: CTL_DD_ALONGTRACK
-uq:
-  method: "MC"
-  n_mc: 200
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: JB2008, toggles: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_ENKF]}
+
+control: {toggles: [CTL_DD_ALONGTRACK]}
+uq: {propagator: PROP_MC, n_mc: 250}
+
 outputs:
-  metrics: [p_min_range_below_threshold, min_range_distribution, close_approach_count, estimator_divergence_prob, recovery_time]
+  qois: [min_inter_sat_range_m, close_approach_flag]
+  metrics: [p_min_range_below_threshold, min_range_p01, estimator_divergence_prob, recovery_time_p90]
 ```
 
-## FORM_B6_ROBUST_FORMATION_STORM
-- **Purpose:** test robustness during storm-like density transients.
-- **Core outputs:** probability of constraint violation, estimator divergence rate.
+## MIS_06_CLUSTER_SPARSE_CONTACT
 
 ```yaml
-scenario_id: FORM_B6_ROBUST_FORMATION_STORM
-area: FORM
-purpose: "Robust formation keeping under storm-like density transient and measurement gaps."
-duration_s: 259200
-dt_control_s: 60.0
-dt_meas_s: 10.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "JB2008"
-  env_toggle: [ENV_S2_STORM_PULSE, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_ENKF]
-control:
-  control_toggle: CTL_DD_ALONGTRACK
-uq:
-  method: "MC"
-  n_mc: 100
-outputs:
-  metrics: [constraint_violation_prob, estimator_divergence_prob, sep_error_p95, recovery_time]
-```
-
-## FORM_B7_CLUSTER_SPARSE_GROUND_CONTACT
-- **Purpose:** cluster (4–8 sats) with sparse ground contact; determine minimal contact plan for stable OD + formation control.
-- **Core outputs:** estimation error growth vs contact gaps, formation violation probability.
-
-```yaml
-scenario_id: FORM_B7_CLUSTER_SPARSE_GROUND_CONTACT
-area: FORM
-purpose: "4–8 sat cluster with sparse ground contact: minimal ground plan for stable OD + formation control."
+scenario_id: MIS_06_CLUSTER_SPARSE_CONTACT
+area: MIS
+purpose: "4–8 satellite cluster with sparse contact; quantify navigation/control degradation vs contact gaps and network choice."
 duration_s: 604800
 dt_control_s: 120.0
 dt_meas_s: 10.0
+
 orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL, SENS_SLR]
-ground:
-  ground_toggle: [GRD_REG_EU, GRD_WEATHER_ON]
-estimation:
-  est_toggle: [EST_EKF, EST_RTS]
-control:
-  control_toggle: CTL_DD_ALONGTRACK
-uq:
-  method: "MC"
-  n_mc: 80
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL, SENS_SLR]}
+ground: {toggles: [GRD_REG_EU, GRD_WEATHER_ON]}   # swap GRD_GLB_20 for comparison
+estimation: {toggles: [EST_EKF, EST_RTS]}
+
+control: {toggles: [CTL_DD_ALONGTRACK]}
+uq: {propagator: PROP_MC, n_mc: 100}
+
 outputs:
-  metrics: [contact_gap_stats, estimation_error_growth, reconvergence_time, formation_violation_prob, station_plan_efficiency]
+  qois: [contact_gap_stats, sep_error_m, pos_rms_m]
+  metrics: [sep_error_p95, pos_rms_p95, reconvergence_time, network_resilience_index]
 ```
 
+## MIS_07_STORM_RESPONSE_FORMATION
+
+```yaml
+scenario_id: MIS_07_STORM_RESPONSE_FORMATION
+area: MIS
+purpose: "Formation robustness to storm-like density transient; quantify constraint violation and recovery probability."
+duration_s: 259200
+dt_control_s: 60.0
+dt_meas_s: 10.0
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: JB2008, toggles: [ENV_S2_STORM_PULSE, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_ENKF]}
+
+control: {toggles: [CTL_DD_ALONGTRACK]}
+uq: {propagator: PROP_MC, n_mc: 120}
+
+outputs:
+  qois: [constraint_violation_flag, recovery_time_s]
+  metrics: [constraint_violation_prob, recovery_prob, recovery_time_p90, sep_error_p95]
+```
 
 ---
 
-# ORBIT DETERMINATION & GROUND SEGMENT SCENARIOS (OD)
+# ORBIT CONTROL SCENARIOS (ORB)
 
-## OD_C1_GNSS_CONTINUOUS_BESTCASE
-- **Purpose:** best-case OD with continuous raw GNSS observables.
-- **Core outputs:** orbit RMS, drag parameter posteriors, residual stats.
+## ORB_01_SMA_HOLD_BY_DRAG
 
 ```yaml
-scenario_id: OD_C1_GNSS_CONTINUOUS_BESTCASE
-area: OD
-purpose: "Best-case OD with continuous raw GNSS code/carrier(+Doppler)."
-duration_s: 86400
-dt_control_s: null
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "UT"
-  ut_alpha: 1e-3
-  ut_beta: 2.0
-  ut_kappa: 0.0
-outputs:
-  metrics: [pos_rms_eci, vel_rms_eci, cdA_posterior_std, alphaE_posterior_std, gnss_residual_stats]
-```
-
-## OD_C2_GNSS_REALISTIC_OUTAGES
-- **Purpose:** OD performance under GNSS outages and antenna constraints.
-- **Core outputs:** error growth vs outages, re-convergence behavior.
-
-```yaml
-scenario_id: OD_C2_GNSS_REALISTIC_OUTAGES
-area: OD
-purpose: "OD with raw GNSS under realistic outages (sky mask, eclipse, antenna constraints)."
-duration_s: 86400
-dt_control_s: null
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 80
-outputs:
-  metrics: [pos_error_growth_rate, reconvergence_time, outage_sensitivity, filter_consistency]
-```
-
-## OD_C3_GNSS_PLUS_ACCEL
-- **Purpose:** OD with raw GNSS augmented by onboard accelerometer to reduce drag/parameter ambiguity.
-- **Core outputs:** posterior variance of density scale and GSI params, accel bias stability.
-
-```yaml
-scenario_id: OD_C3_GNSS_PLUS_ACCEL
-area: OD
-purpose: "OD + parameter estimation with raw GNSS + accelerometer."
-duration_s: 86400
-dt_control_s: null
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL, SENS_ACCEL]
-ground:
-  ground_toggle: []
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "UT"
-  ut_alpha: 1e-3
-  ut_beta: 2.0
-  ut_kappa: 0.0
-outputs:
-  metrics: [pos_rms_eci, logrho_state_std, alphaE_posterior_std, accel_bias_est, drag_decomposition_quality]
-```
-
-## OD_C4_SLR_ONLY_SPARSE
-- **Purpose:** OD with SLR-only sparse passes (precision but gaps).
-- **Core outputs:** between-pass divergence, bias sensitivity, station geometry dependence.
-
-```yaml
-scenario_id: OD_C4_SLR_ONLY_SPARSE
-area: OD
-purpose: "SLR-only OD with sparse passes; quantify divergence between passes and bias sensitivity."
-duration_s: 604800        # 7 days
-dt_control_s: null
-dt_meas_s: 5.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_SLR]
-ground:
-  ground_toggle: [GRD_GLB_20, GRD_WEATHER_ON]
-estimation:
-  est_toggle: [EST_BLS]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 50
-outputs:
-  metrics: [pos_rms_eci, between_pass_divergence, station_bias_est, slr_residual_stats]
-```
-
-## OD_C5_GNSS_SLR_HYBRID_ANCHOR
-- **Purpose:** hybrid OD with raw GNSS + SLR anchor to control drifts/biases.
-- **Core outputs:** improvement vs GNSS-only in parameter posteriors and long-arc stability.
-
-```yaml
-scenario_id: OD_C5_GNSS_SLR_HYBRID_ANCHOR
-area: OD
-purpose: "Hybrid OD: raw GNSS + SLR anchor for drift/bias control and robustness."
-duration_s: 172800
-dt_control_s: null
-dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W2_WIND_OU_BIAS]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL, SENS_SLR]
-ground:
-  ground_toggle: [GRD_GLB_20, GRD_WEATHER_ON]
-estimation:
-  est_toggle: [EST_EKF, EST_RTS]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "UT"
-  ut_alpha: 1e-3
-  ut_beta: 2.0
-  ut_kappa: 0.0
-outputs:
-  metrics: [pos_rms_eci, alphaE_posterior_std, logrho_state_std, long_arc_stability, residual_whiteness_tests]
-```
-
-## OD_C6_SLR_SINGLE_STATION_WORSTCASE
-- **Purpose:** what OD is possible with a single station + elevation mask.
-- **Core outputs:** observability degradation, along-track uncertainty growth.
-
-```yaml
-scenario_id: OD_C6_SLR_SINGLE_STATION_WORSTCASE
-area: OD
-purpose: "Worst-case: SLR-only with a single mid-lat station; quantify observability limits."
-duration_s: 604800
-dt_control_s: null
-dt_meas_s: 5.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO]
-sensors:
-  sensor_toggle: [SENS_SLR]
-ground:
-  ground_toggle: [GRD_ONE_MID, GRD_WEATHER_OFF]
-estimation:
-  est_toggle: [EST_BLS]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 40
-outputs:
-  metrics: [along_track_sigma, cross_track_sigma, radial_sigma, between_pass_divergence, station_geometry_sensitivity]
-```
-
-## OD_C7_NETWORK_COMPARISON_REGIONAL_VS_GLOBAL
-- **Purpose:** compare OD performance across different ground station networks.
-- **Implementation:** run the same scenario with `GRD_REG_EU` vs `GRD_GLB_20`.
-- **Core outputs:** OD accuracy and parameter posteriors vs network.
-
-```yaml
-scenario_id: OD_C7_NETWORK_COMPARISON_REGIONAL_VS_GLOBAL
-area: OD
-purpose: "Compare OD/parameter estimation with regional vs global ground station networks."
+scenario_id: ORB_01_SMA_HOLD_BY_DRAG
+area: ORB
+purpose: "Altitude-band holding using drag-area scheduling (no propellant); quantify station-keeping performance under environment/GSI uncertainty."
 duration_s: 259200
-dt_control_s: null
-dt_meas_s: 5.0
-orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_SLR]
-ground:
-  ground_toggle: [GRD_REG_EU, GRD_WEATHER_ON]   # implementer: swap GRD_GLB_20 for comparison
-estimation:
-  est_toggle: [EST_BLS]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 40
+dt_control_s: 60.0
+dt_meas_s: 10.0
+
+orbit: {type: kepler, alt_km: 300, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ORB_DRAG_COMP]}
+uq: {propagator: PROP_MC, n_mc: 150}
+
 outputs:
-  metrics: [pos_rms_eci, alphaE_posterior_std, network_effect_size, pass_count, residual_stats]
+  qois: [altitude_error_m, da_dt, control_duty_cycle]
+  metrics: [altitude_band_violation_prob, da_dt_p95, control_duty_cycle, expected_lifetime_gain]
 ```
 
-## OD_C8_STATION_WEATHER_AVAILABILITY
-- **Purpose:** OD robustness under weather-limited station availability; quantify expected error under stochastic visibility losses.
-- **Core outputs:** expected orbit error, pass-loss statistics, resilience index.
+## ORB_02_SMA_HOLD_BY_THRUST
 
 ```yaml
-scenario_id: OD_C8_STATION_WEATHER_AVAILABILITY
-area: OD
-purpose: "OD robustness under stochastic station weather availability (SLR)."
-duration_s: 604800
-dt_control_s: null
-dt_meas_s: 5.0
-orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P2_FIXED_ALPHAE]
-environment:
-  model: "DTM2013"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_SLR]
-ground:
-  ground_toggle: [GRD_GLB_20, GRD_WEATHER_ON]
-estimation:
-  est_toggle: [EST_BLS]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 80
+scenario_id: ORB_02_SMA_HOLD_BY_THRUST
+area: ORB
+purpose: "Altitude/SMA holding via thrust pulses; quantify performance under thrust magnitude/direction/timing and mass uncertainty."
+duration_s: 259200
+dt_control_s: 60.0
+dt_meas_s: 10.0
+
+orbit: {type: kepler, alt_km: 300, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ORB_THRUST_SMA]}
+uq: {propagator: PROP_MC, n_mc: 150}
+
 outputs:
-  metrics: [expected_pos_rms, percentile_pos_rms, pass_loss_stats, between_pass_divergence, network_resilience_index]
+  qois: [altitude_error_m, delta_v_used_mps, targeting_error]
+  metrics: [altitude_band_violation_prob, delta_v_p95, targeting_error_stats, robustness_score]
 ```
 
-## OD_C9_MEAS_ERROR_STRESS_TESTS
-- **Purpose:** stress-test measurement models (GNSS multipath/outliers, cycle slips, SLR timing biases).
-- **Core outputs:** robustness metrics, false-event rates, residual tail behavior.
+## ORB_03_RECOVERY_AFTER_STORM
 
 ```yaml
-scenario_id: OD_C9_MEAS_ERROR_STRESS_TESTS
-area: OD
-purpose: "Stress-test GNSS/SLR measurement errors: outliers, cycle slips, timing biases."
+scenario_id: ORB_03_RECOVERY_AFTER_STORM
+area: ORB
+purpose: "Storm-induced decay + recovery control; quantify control cost and recovery probability (nav + environment jointly uncertain)."
+duration_s: 432000
+dt_control_s: 120.0
+dt_meas_s: 10.0
+
+orbit: {type: kepler, alt_km: 320, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: JB2008, toggles: [ENV_S2_STORM_PULSE, ENV_W2_WIND_OU_BIAS]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL, SENS_SLR]}
+ground: {toggles: [GRD_GLB_20, GRD_WEATHER_ON]}
+estimation: {toggles: [EST_EKF, EST_RTS]}
+
+control: {toggles: [CTL_ORB_DRAG_COMP]}    # also run thrust variant if available
+uq: {propagator: PROP_MC, n_mc: 200}
+
+outputs:
+  qois: [recovery_time_s, altitude_recovered_flag, control_cost]
+  metrics: [recovery_prob, recovery_time_p90, control_cost_p95, nav_gap_sensitivity]
+```
+
+## ORB_04_MANEUVER_EXECUTION_UNC
+
+```yaml
+scenario_id: ORB_04_MANEUVER_EXECUTION_UNC
+area: ORB
+purpose: "Single maneuver execution uncertainty (timing/pointing); quantify post-maneuver orbit state uncertainty."
+duration_s: 21600
+dt_control_s: 1.0
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_Q1_QUIET, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ORB_THRUST_SMA]}
+uq: {propagator: PROP_UT, ut_alpha: 1e-3, ut_beta: 2.0, ut_kappa: 0.0}
+
+outputs:
+  qois: [delta_a_km, delta_e, delta_i_deg]
+  metrics: [post_maneuver_pos_sigma, post_maneuver_vel_sigma, targeting_error_stats]
+```
+
+## ORB_05_NAV_OUTAGE_STATIONKEEPING
+
+```yaml
+scenario_id: ORB_05_NAV_OUTAGE_STATIONKEEPING
+area: ORB
+purpose: "Station keeping under GNSS outages + sparse SLR; quantify control degradation driven by navigation uncertainty."
+duration_s: 259200
+dt_control_s: 60.0
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL, SENS_SLR]}
+ground: {toggles: [GRD_REG_EU, GRD_WEATHER_ON]}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ORB_DRAG_COMP]}
+uq: {propagator: PROP_MC, n_mc: 120}
+
+outputs:
+  qois: [altitude_error_m, nav_error, control_cost]
+  metrics: [altitude_band_violation_prob, nav_outage_sensitivity, recovery_time_p90, control_cost_p95]
+```
+
+---
+
+# AERODYNAMICS SCENARIOS (AERO)
+
+## AERO_01_GSI_PARAMETER_CALIBRATION
+
+```yaml
+scenario_id: AERO_01_GSI_PARAMETER_CALIBRATION
+area: AERO
+purpose: "Calibrate GSI parameters (alpha_E, Tw) using GNSS+SLR(+accelerometer); quantify posterior uncertainty and identifiability."
 duration_s: 172800
 dt_control_s: null
 dt_meas_s: 1.0
-orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
-spacecraft:
-  mass_kg: 12.0
-  inertia_kgm2: [0.15, 0.12, 0.20]
-  panels: "baseline_panels_v1"
-aero:
-  model: "panel_gsi"
-  gsi_toggle: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GEO_S1_SHADOWING_ON]
-environment:
-  model: "NRLMSISE00"
-  env_toggle: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]
-sensors:
-  sensor_toggle: [SENS_GNSS_RAW_DUAL, SENS_SLR]
-ground:
-  ground_toggle: [GRD_REG_EU, GRD_WEATHER_ON]
-estimation:
-  est_toggle: [EST_EKF]
-control:
-  control_toggle: CTL_NONE
-uq:
-  method: "MC"
-  n_mc: 120
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GSI_P1_EST_ALPHAE, GSI_T2_DAYNIGHT_TW, GEO_SHADOW_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL, SENS_SLR, SENS_ACCEL]}
+ground: {toggles: [GRD_GLB_20, GRD_WEATHER_ON]}
+estimation: {toggles: [EST_EKF, EST_RTS]}
+
+control: {toggles: [CTL_NONE]}
+uq: {propagator: PROP_UT, ut_alpha: 1e-3, ut_beta: 2.0, ut_kappa: 0.0}
+
 outputs:
-  metrics: [outlier_rejection_rate, cycle_slip_detection_rate, bias_est_drift, false_density_event_rate, residual_heavy_tail_score]
+  qois: [alphaE_posterior, Tw_posterior, logrho_posterior]
+  metrics: [alphaE_posterior_std, Tw_posterior_std, parameter_correlation_matrix, residual_whiteness_tests]
 ```
+
+## AERO_02_MODEL_FORM_ENSEMBLE
+
+```yaml
+scenario_id: AERO_02_MODEL_FORM_ENSEMBLE
+area: AERO
+purpose: "Model-form UQ using ensemble runs (Maxwell vs CLL/Sentman/Tuttas); quantify spread in Cd/Ct and orbit decay."
+duration_s: 86400
+dt_control_s: null
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 350, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GEO_SHADOW_ON]}   # implementer: run multiple variants with different GSI_* toggles
+environment: {model: DTM2013, toggles: [ENV_Q1_QUIET, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_NONE]}
+uq: {propagator: PROP_MC, n_mc: 80}
+
+outputs:
+  qois: [Cd_eff, Ct_eff, da_dt]
+  metrics: [model_spread_Cd, model_spread_da_dt, model_rank_by_residual_if_available]
+```
+
+## AERO_03_GEOMETRY_AND_ALIGNMENT_UQ
+
+```yaml
+scenario_id: AERO_03_GEOMETRY_AND_ALIGNMENT_UQ
+area: AERO
+purpose: "Geometry/shadowing/misalignment UQ; quantify impact on force/torque and derived CdA."
+duration_s: 43200
+dt_control_s: 5.0
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 400, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_SHADOW_ON, GEO_MISALIGN_ON]}
+environment: {model: NRLMSISE00, toggles: [ENV_Q1_QUIET, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_ATT_ST, SENS_ATT_GYRO]}
+ground: {toggles: []}
+estimation: {toggles: [EST_EKF]}
+
+control: {toggles: [CTL_ATT_AERO_POINT]}
+uq: {propagator: PROP_MC, n_mc: 150}
+
+outputs:
+  qois: [force_body, torque_body, CdA_eff]
+  metrics: [CdA_std, torque_std, shadowing_sensitivity_index, misalignment_effect_size]
+```
+
+## AERO_04_DISCREPANCY_TERM_TRANSITIONAL
+
+```yaml
+scenario_id: AERO_04_DISCREPANCY_TERM_TRANSITIONAL
+area: AERO
+purpose: "Transitional-regime/model discrepancy channel: enable discrepancy term and test whether it absorbs structured residuals."
+duration_s: 172800
+dt_control_s: null
+dt_meas_s: 1.0
+
+orbit: {type: kepler, alt_km: 250, e: 0.001, i_deg: 51.6}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, AERO_DISC_ON, GEO_SHADOW_ON]}
+environment: {model: JB2008, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_GNSS_RAW_DUAL, SENS_SLR]}
+ground: {toggles: [GRD_GLB_20, GRD_WEATHER_ON]}
+estimation: {toggles: [EST_EKF, EST_RTS]}
+
+control: {toggles: [CTL_NONE]}
+uq: {propagator: PROP_MC, n_mc: 120}
+
+outputs:
+  qois: [discrepancy_state, residual_structure]
+  metrics: [residual_whiteness_tests, discrepancy_state_std, improvement_vs_no_discrepancy]
+```
+
+## AERO_05_SURFACE_AGING_AO_EROSION
+
+```yaml
+scenario_id: AERO_05_SURFACE_AGING_AO_EROSION
+area: AERO
+purpose: "Time-varying accommodation/roughness surrogate (AO erosion): quantify long-arc drift in CdA and OD impact."
+duration_s: 604800
+dt_control_s: null
+dt_meas_s: 5.0
+
+orbit: {type: kepler, alt_km: 300, e: 0.001, i_deg: 97.0}
+spacecraft: {mass_kg: 12.0, inertia_kgm2: [0.15, 0.12, 0.20], geometry_ref: baseline_mesh_v1}
+
+aero: {model: mesh_panel_aero, toggles: [GSI_M1_MAXWELL, GEO_ROUGHNESS_ON, GEO_SHADOW_ON]}
+environment: {model: DTM2013, toggles: [ENV_S1_OU_LOGRHO, ENV_W1_WIND_DET]}
+
+sensors: {toggles: [SENS_SLR]}
+ground: {toggles: [GRD_REG_EU, GRD_WEATHER_ON]}
+estimation: {toggles: [EST_BLS]}
+
+control: {toggles: [CTL_NONE]}
+uq: {propagator: PROP_MC, n_mc: 80}
+
+outputs:
+  qois: [CdA_drift_rate, drift_parameter_proxy]
+  metrics: [CdA_drift_rate_p95, long_arc_stability, station_bias_confounding_score]
+```
+
+---
+
+## Recommended bundles (thesis-ready)
+
+### Minimal publishable set (balanced coverage)
+
+* ATT: **ATT_01, ATT_02, ATT_05**
+* MIS: **MIS_02, MIS_05, MIS_06**
+* ORB: **ORB_01, ORB_03, ORB_05**
+* AERO: **AERO_01, AERO_03, AERO_04**
+
+### Stress-test bundle (tail risk + ops fragility)
+
+* MIS_05 (higher MC), MIS_07
+* ORB_03, ORB_05
+* AERO_04 + ENV_S2_STORM_PULSE
+
+### Calibration/validation bundle (data-informed)
+
+* AERO_01 (GNSS+SLR+accel), AERO_04 (discrepancy)
+* Always run residual diagnostics + whiteness tests
 
 ---
 
 ## Scenario index (stable IDs)
 
 ### ATT
-- ATT_A1_DETUMBLE_AERO_ONLY
-- ATT_A2_NADIR_POINTING
-- ATT_A3_YAW_STEERING_WIND_UNC
-- ATT_A4_SPIN_STAB_VS_3AXIS
-- ATT_A5_CONTROL_AUTHORITY_LIMIT_MAP
-- ATT_A6_GSI_SENSITIVITY_CONTROL
-- ATT_A7_ECLIPSE_THERMAL_TRANSITION
-- ATT_A8_ROLL_ROTATION_BASELINE
-- ATT_A9_PITCH_ROTATION_BASELINE
-- ATT_A10_YAW_ROTATION_BASELINE
 
-### FORM
-- FORM_B1_SINGLE_DRAG_MANAGEMENT
-- FORM_B2_ALONGTRACK_2SAT_DD_KEEPING
-- FORM_B3_LVLH_BOX_CONSTRAINT_3SAT
-- FORM_B4_REPHASE_DIFFERENTIAL_DRAG
-- FORM_B5_CLOSE_APPROACH_RISK
-- FORM_B6_ROBUST_FORMATION_STORM
-- FORM_B7_CLUSTER_SPARSE_GROUND_CONTACT
+* ATT_01_DETUMBLE_AERO_ONLY
+* ATT_02_NADIR_POINTING_ROBUST
+* ATT_03_YAW_STEERING_WIND_BIAS
+* ATT_04_AUTHORITY_FEASIBILITY_MAP
+* ATT_05_ECLIPSE_THERMAL_MODE_SWITCH
+* ATT_06_DRAG_MIN_POINTING_TRADE
 
-### OD
-- OD_C1_GNSS_CONTINUOUS_BESTCASE
-- OD_C2_GNSS_REALISTIC_OUTAGES
-- OD_C3_GNSS_PLUS_ACCEL
-- OD_C4_SLR_ONLY_SPARSE
-- OD_C5_GNSS_SLR_HYBRID_ANCHOR
-- OD_C6_SLR_SINGLE_STATION_WORSTCASE
-- OD_C7_NETWORK_COMPARISON_REGIONAL_VS_GLOBAL
-- OD_C8_STATION_WEATHER_AVAILABILITY
-- OD_C9_MEAS_ERROR_STRESS_TESTS
+### MIS
 
----
+* MIS_01_SINGLE_DRAG_MANAGEMENT
+* MIS_02_DIFF_DRAG_KEEPING_2SAT
+* MIS_03_REPHASE_2SAT
+* MIS_04_LVLH_BOX_3SAT
+* MIS_05_CLOSE_APPROACH_RISK
+* MIS_06_CLUSTER_SPARSE_CONTACT
+* MIS_07_STORM_RESPONSE_FORMATION
 
-## Minimal “selected set” for thesis runs (recommended)
+### ORB
 
-If you need a compact set with strong coverage:
+* ORB_01_SMA_HOLD_BY_DRAG
+* ORB_02_SMA_HOLD_BY_THRUST
+* ORB_03_RECOVERY_AFTER_STORM
+* ORB_04_MANEUVER_EXECUTION_UNC
+* ORB_05_NAV_OUTAGE_STATIONKEEPING
 
-- **ATT:** ATT_A1, ATT_A2, ATT_A6, ATT_A7  
-- **FORM:** FORM_B2, FORM_B4, FORM_B6  
-- **OD:** OD_C2, OD_C4, OD_C5, OD_C7  
+### AERO
 
-Pair each with environment toggles: `ENV_Q1_QUIET`, `ENV_S1_OU_LOGRHO`, `ENV_S2_STORM_PULSE`.
+* AERO_01_GSI_PARAMETER_CALIBRATION
+* AERO_02_MODEL_FORM_ENSEMBLE
+* AERO_03_GEOMETRY_AND_ALIGNMENT_UQ
+* AERO_04_DISCREPANCY_TERM_TRANSITIONAL
+* AERO_05_SURFACE_AGING_AO_EROSION
+
+

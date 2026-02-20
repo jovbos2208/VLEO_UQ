@@ -30,6 +30,8 @@ if not isinstance(meta.get("toggles"), dict):
 print("[ci-smoke] summary metadata keys present")
 PY
 
+python scripts/aggregate_run_summary.py --run_dir "$OUTDIR" --out "$OUTDIR/run_summary.json"
+
 python -m unittest tests/test_catalog_converter.py tests/test_propagator_regression.py -v
 
 echo "[ci-smoke] deterministic smoke passed"

@@ -25,6 +25,7 @@ from scripts.run_case_studies import (
     sample_mc_initial_states,
     wing_profile_for_scenario,
 )
+from scripts.model_discrepancy import apply_density_model_discrepancy
 from scripts.uq_parameter_channels import apply_propagator_overrides, apply_uq_parameter_channels
 
 
@@ -124,6 +125,8 @@ def _build_env_for_case(
     prop_det,
     eta1_rad: np.ndarray | None,
     eta2_rad: np.ndarray | None,
+    scenario: dict,
+    seed: int,
     density_scale: float = 1.0,
 ) -> list:
     use_env_sources = os.environ.get("VLEO_USE_ENV_SOURCES", "0") == "1"
@@ -140,6 +143,7 @@ def _build_env_for_case(
         if density_scale != 1.0:
             for e in env:
                 e.density *= float(density_scale)
+        apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(seed))
         return env
 
     start_utc = os.environ.get("VLEO_START_UTC")
@@ -168,6 +172,7 @@ def _build_env_for_case(
     if density_scale != 1.0:
         for e in env:
             e.density *= float(density_scale)
+    apply_density_model_discrepancy(env, t_grid, scenario=scenario, seed=int(seed))
     return env
 
 
@@ -187,6 +192,8 @@ def mission_scenario() -> dict:
         prop_det,
         None,
         None,
+        scenario,
+        seed,
         density_scale=float(scenario.get("density_scale", 1.0)),
     )
     particles = int(scenario.get("particles", 32))
@@ -226,6 +233,8 @@ def formation_scenario() -> dict:
         prop_det,
         None,
         None,
+        scenario,
+        seed,
         density_scale=float(scenario.get("density_scale", 1.0)),
     )
     particles = int(scenario.get("particles", 32))
@@ -269,6 +278,8 @@ def attitude_scenario() -> dict:
         prop_det,
         eta1_rad,
         eta2_rad,
+        scenario,
+        seed,
         density_scale=float(scenario.get("density_scale", 1.0)),
     )
     particles = int(scenario.get("particles", 32))

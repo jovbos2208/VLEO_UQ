@@ -102,6 +102,12 @@ PYBIND11_MODULE(_vleo_uq, m) {
         .def_readwrite("temperature_K", &EnvInputs::temperature_K)
         .def_readwrite("particles_mass_kg", &EnvInputs::particles_mass_kg)
         .def_readwrite("wind_I", &EnvInputs::wind_I)
+        .def_readwrite("sun_position_I_m", &EnvInputs::sun_position_I_m)
+        .def_readwrite("moon_position_I_m", &EnvInputs::moon_position_I_m)
+        .def_readwrite("magnetic_field_I_T", &EnvInputs::magnetic_field_I_T)
+        .def_readwrite("srp_scale", &EnvInputs::srp_scale)
+        .def_readwrite("albedo_ir_scale", &EnvInputs::albedo_ir_scale)
+        .def_readwrite("tide_loading_accel_I_m_s2", &EnvInputs::tide_loading_accel_I_m_s2)
         .def_readwrite("eta1_rad", &EnvInputs::eta1_rad)
         .def_readwrite("eta2_rad", &EnvInputs::eta2_rad)
         .def_readwrite("temperature_ratio_method", &EnvInputs::temperature_ratio_method);
@@ -114,6 +120,36 @@ PYBIND11_MODULE(_vleo_uq, m) {
     py::class_<PropagatorConfig>(m, "PropagatorConfig")
         .def(py::init<>())
         .def_readwrite("mu_earth_m3_s2", &PropagatorConfig::mu_earth_m3_s2)
+        .def_readwrite("use_j2_perturbation", &PropagatorConfig::use_j2_perturbation)
+        .def_readwrite("j2_earth", &PropagatorConfig::j2_earth)
+        .def_readwrite("use_j3_perturbation", &PropagatorConfig::use_j3_perturbation)
+        .def_readwrite("j3_earth", &PropagatorConfig::j3_earth)
+        .def_readwrite("use_j4_perturbation", &PropagatorConfig::use_j4_perturbation)
+        .def_readwrite("j4_earth", &PropagatorConfig::j4_earth)
+        .def_readwrite("gravity_fd_step_m", &PropagatorConfig::gravity_fd_step_m)
+        .def_readwrite("earth_equatorial_radius_m", &PropagatorConfig::earth_equatorial_radius_m)
+        .def_readwrite("use_sun_third_body", &PropagatorConfig::use_sun_third_body)
+        .def_readwrite("use_moon_third_body", &PropagatorConfig::use_moon_third_body)
+        .def_readwrite("mu_sun_m3_s2", &PropagatorConfig::mu_sun_m3_s2)
+        .def_readwrite("mu_moon_m3_s2", &PropagatorConfig::mu_moon_m3_s2)
+        .def_readwrite("sun_ephemeris_scale", &PropagatorConfig::sun_ephemeris_scale)
+        .def_readwrite("moon_ephemeris_scale", &PropagatorConfig::moon_ephemeris_scale)
+        .def_readwrite("use_srp_acceleration", &PropagatorConfig::use_srp_acceleration)
+        .def_readwrite("srp_cr", &PropagatorConfig::srp_cr)
+        .def_readwrite("srp_area_m2", &PropagatorConfig::srp_area_m2)
+        .def_readwrite("solar_pressure_1au_n_m2", &PropagatorConfig::solar_pressure_1au_n_m2)
+        .def_readwrite("astronomical_unit_m", &PropagatorConfig::astronomical_unit_m)
+        .def_readwrite("use_albedo_ir_acceleration", &PropagatorConfig::use_albedo_ir_acceleration)
+        .def_readwrite("albedo_ir_cr", &PropagatorConfig::albedo_ir_cr)
+        .def_readwrite("albedo_ir_area_m2", &PropagatorConfig::albedo_ir_area_m2)
+        .def_readwrite("albedo_pressure_n_m2", &PropagatorConfig::albedo_pressure_n_m2)
+        .def_readwrite("earth_ir_pressure_n_m2", &PropagatorConfig::earth_ir_pressure_n_m2)
+        .def_readwrite("use_tide_loading_acceleration", &PropagatorConfig::use_tide_loading_acceleration)
+        .def_readwrite("tide_loading_scale", &PropagatorConfig::tide_loading_scale)
+        .def_readwrite("use_magnetic_torque", &PropagatorConfig::use_magnetic_torque)
+        .def_readwrite("residual_dipole_B_A_m2", &PropagatorConfig::residual_dipole_B_A_m2)
+        .def_readwrite("residual_dipole_scale", &PropagatorConfig::residual_dipole_scale)
+        .def_readwrite("magnetic_field_scale", &PropagatorConfig::magnetic_field_scale)
         .def_readwrite("rtol", &PropagatorConfig::rtol)
         .def_readwrite("atol", &PropagatorConfig::atol)
         .def_readwrite("min_step_s", &PropagatorConfig::min_step_s)
@@ -236,7 +272,7 @@ PYBIND11_MODULE(_vleo_uq, m) {
                const Eigen::MatrixXd& P0,
                const Eigen::VectorXd& t_grid,
                const std::vector<EnvInputs>& env,
-               bool return_stm) {
+               bool return_stm) -> py::object {
                 const int nt = static_cast<int>(t_grid.size());
                 py::array_t<double> mean({nt, StmPropagator::kStateSize});
                 py::array_t<double> cov({nt, StmPropagator::kStateSize, StmPropagator::kStateSize});

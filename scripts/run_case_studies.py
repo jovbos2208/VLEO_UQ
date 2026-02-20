@@ -13,9 +13,15 @@ from typing import Any
 import numpy as np
 
 try:
+    from scripts.attitude_uq_modes import summarize_attitude_uq_modes
+    from scripts.model_discrepancy import apply_density_model_discrepancy
+    from scripts.payload_impact import compute_payload_impact_metrics, payload_metrics_enabled
     from scripts.summary_metadata import build_run_metadata
     from scripts.uq_parameter_channels import apply_uq_parameter_channels
 except ModuleNotFoundError:
+    from attitude_uq_modes import summarize_attitude_uq_modes
+    from model_discrepancy import apply_density_model_discrepancy
+    from payload_impact import compute_payload_impact_metrics, payload_metrics_enabled
     from summary_metadata import build_run_metadata
     from uq_parameter_channels import apply_uq_parameter_channels
 
@@ -36,6 +42,12 @@ def build_env(
         e.temperature_K = temperature_K
         e.particles_mass_kg = particle_mass_kg
         e.wind_I = np.zeros(3)
+        e.sun_position_I_m = np.zeros(3)
+        e.moon_position_I_m = np.zeros(3)
+        e.magnetic_field_I_T = np.zeros(3)
+        e.tide_loading_accel_I_m_s2 = np.zeros(3)
+        e.srp_scale = 1.0
+        e.albedo_ir_scale = 1.0
         if eta1_rad is not None:
             e.eta1_rad = float(eta1_rad[i])
         if eta2_rad is not None:
@@ -212,6 +224,7 @@ def build_env_from_sources(
         lat_deg=lat_deg,
         lon_deg=lon_deg,
         alt_m=alt_m,
+        r_eci=det_guess[:, 0:3],
         interpolation=interpolation,
     )
 
@@ -787,6 +800,36 @@ def clone_propagator_config(PropagatorConfig, base_config, overrides: dict[str, 
     cfg = PropagatorConfig()
     attrs = [
         "mu_earth_m3_s2",
+        "use_j2_perturbation",
+        "j2_earth",
+        "use_j3_perturbation",
+        "j3_earth",
+        "use_j4_perturbation",
+        "j4_earth",
+        "gravity_fd_step_m",
+        "earth_equatorial_radius_m",
+        "use_sun_third_body",
+        "use_moon_third_body",
+        "mu_sun_m3_s2",
+        "mu_moon_m3_s2",
+        "sun_ephemeris_scale",
+        "moon_ephemeris_scale",
+        "use_srp_acceleration",
+        "srp_cr",
+        "srp_area_m2",
+        "solar_pressure_1au_n_m2",
+        "astronomical_unit_m",
+        "use_albedo_ir_acceleration",
+        "albedo_ir_cr",
+        "albedo_ir_area_m2",
+        "albedo_pressure_n_m2",
+        "earth_ir_pressure_n_m2",
+        "use_tide_loading_acceleration",
+        "tide_loading_scale",
+        "use_magnetic_torque",
+        "residual_dipole_B_A_m2",
+        "residual_dipole_scale",
+        "magnetic_field_scale",
         "rtol",
         "atol",
         "min_step_s",
@@ -1044,6 +1087,12 @@ def run_case(
     pod_slr_weather_p_stay_clear: float = 0.985,
     pod_slr_weather_p_stay_blocked: float = 0.93,
     pod_slr_weather_seed: int | None = None,
+    pod_measurement_latency_s: float = 0.0,
+    pod_measurement_latency_jitter_s: float = 0.0,
+    pod_measurement_latency_seed: int | None = None,
+    pod_ops_outage_on: bool = False,
+    pod_ops_outage_rate_per_hour: float = 0.0,
+    pod_ops_outage_mean_duration_s: float = 0.0,
     initial_w0_rad_s: np.ndarray | None = None,
     orbit: dict | None = None,
     attitude_reference: str | None = None,
@@ -1101,6 +1150,12 @@ def run_case(
         if density_scale != 1.0:
             for e in env:
                 e.density *= density_scale
+    discrepancy_meta = apply_density_model_discrepancy(
+        env,
+        t_grid,
+        scenario=scenario_meta if isinstance(scenario_meta, dict) else {"name": name},
+        seed=int(seed),
+    )
     rng = np.random.default_rng(seed)
     freeze_attitude = bool(getattr(config, "freeze_attitude", False))
     X0 = sample_mc_initial_states(x0, P0, particles, rng, freeze_attitude)
@@ -1177,11 +1232,39 @@ def run_case(
         "stm_cov_rel_err": stm_cov_err,
         "seed": seed,
         "events_count": len(parsed_events),
+        "model_discrepancy": discrepancy_meta,
+        "uq_parameter_draw": (
+            dict((scenario_meta or {}).get("uq_parameter_draw", {}))
+            if isinstance(scenario_meta, dict)
+            else {}
+        ),
         "metadata": build_run_metadata(
             scenario_meta if isinstance(scenario_meta, dict) else {"name": name},
             seed,
         ),
     }
+
+    if payload_metrics_enabled(default=True):
+        max_samples = int(os.environ.get("VLEO_PAYLOAD_MAX_SAMPLES", "25"))
+        summary["payload_impact"] = compute_payload_impact_metrics(
+            det_states=det_states,
+            mc_states=mc_states,
+            t_grid=t_grid,
+            max_samples=max_samples,
+        )
+    if not freeze_attitude:
+        summary["attitude_uq_modes"] = summarize_attitude_uq_modes(
+            t_grid=t_grid,
+            det_states=det_states,
+            mc_states=mc_states,
+            seed=int(seed),
+            fast_tau_s=scenario_meta.get("att_uq_fast_tau_s", 200.0)
+            if isinstance(scenario_meta, dict)
+            else 200.0,
+            fast_sigma_rad=scenario_meta.get("att_uq_fast_sigma_rad", 1e-4)
+            if isinstance(scenario_meta, dict)
+            else 1e-4,
+        )
 
     if use_env_sources:
         save_json(
@@ -1226,6 +1309,42 @@ def run_case(
                 return arcs
 
             rng = np.random.default_rng(seed)
+            latency_s = float(
+                (scenario_meta or {}).get("pod_measurement_latency_s", pod_measurement_latency_s)
+                if isinstance(scenario_meta, dict)
+                else pod_measurement_latency_s
+            )
+            latency_jitter_s = float(
+                (scenario_meta or {}).get("pod_measurement_latency_jitter_s", pod_measurement_latency_jitter_s)
+                if isinstance(scenario_meta, dict)
+                else pod_measurement_latency_jitter_s
+            )
+            latency_seed = int(
+                (scenario_meta or {}).get(
+                    "pod_measurement_latency_seed",
+                    seed if pod_measurement_latency_seed is None else pod_measurement_latency_seed,
+                )
+                if isinstance(scenario_meta, dict)
+                else (seed if pod_measurement_latency_seed is None else pod_measurement_latency_seed)
+            )
+            ops_outage_on = bool(
+                (scenario_meta or {}).get("pod_ops_outage_on", pod_ops_outage_on)
+                if isinstance(scenario_meta, dict)
+                else pod_ops_outage_on
+            )
+            ops_outage_rate_per_hour = float(
+                (scenario_meta or {}).get("pod_ops_outage_rate_per_hour", pod_ops_outage_rate_per_hour)
+                if isinstance(scenario_meta, dict)
+                else pod_ops_outage_rate_per_hour
+            )
+            ops_outage_mean_duration_s = float(
+                (scenario_meta or {}).get(
+                    "pod_ops_outage_mean_duration_s",
+                    pod_ops_outage_mean_duration_s,
+                )
+                if isinstance(scenario_meta, dict)
+                else pod_ops_outage_mean_duration_s
+            )
             gnss_positions = None
             sat_clock_bias_m = None
             if (not pod_disable_gnss) and pod_sp3:
@@ -1268,6 +1387,9 @@ def run_case(
                     carrier_outlier_prob=float(pod_gnss_carrier_outlier_prob),
                     carrier_outlier_sigma_scale=float(pod_gnss_carrier_outlier_sigma_scale),
                     sat_clock_bias_m=sat_clock_bias_m,
+                    ops_outage_on=ops_outage_on,
+                    ops_outage_rate_per_hour=ops_outage_rate_per_hour,
+                    ops_outage_mean_duration_s=ops_outage_mean_duration_s,
                 )
 
             slr = None
@@ -1298,6 +1420,9 @@ def run_case(
                     cadence_s=20.0,
                     availability_mask=slr_mask,
                     rng=rng,
+                    ops_outage_on=ops_outage_on,
+                    ops_outage_rate_per_hour=ops_outage_rate_per_hour,
+                    ops_outage_mean_duration_s=ops_outage_mean_duration_s,
                 )
 
             arcs = build_arcs(duration_s, dt_s, pod_arc_s, pod_overlap_s)
@@ -1338,6 +1463,9 @@ def run_case(
                 enkf_seed=int(seed if pod_enkf_seed is None else pod_enkf_seed),
                 enkf_inflation=float(pod_enkf_inflation),
                 enkf_use_carrier=bool(pod_enkf_use_carrier),
+                measurement_latency_s=latency_s,
+                measurement_latency_jitter_s=latency_jitter_s,
+                measurement_latency_seed=latency_seed,
             )
             pod_summaries = summarize_multi_arc(pod_results, horizons_s=(1800.0, 3600.0))
 
@@ -1390,6 +1518,12 @@ def run_case(
                 "slr_weather_p_stay_clear": float(pod_slr_weather_p_stay_clear),
                 "slr_weather_p_stay_blocked": float(pod_slr_weather_p_stay_blocked),
                 "slr_weather_seed": None if pod_slr_weather_seed is None else int(pod_slr_weather_seed),
+                "measurement_latency_s": float(latency_s),
+                "measurement_latency_jitter_s": float(latency_jitter_s),
+                "measurement_latency_seed": int(latency_seed),
+                "ops_outage_on": bool(ops_outage_on),
+                "ops_outage_rate_per_hour": float(ops_outage_rate_per_hour),
+                "ops_outage_mean_duration_s": float(ops_outage_mean_duration_s),
             }
             if gnss is not None:
                 summary["pod"]["gnss_meas_count"] = int(gnss.values.shape[0])

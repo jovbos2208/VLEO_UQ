@@ -95,6 +95,126 @@ Eigen::Vector4d quat_derivative_BI(const Eigen::Quaterniond& q_BI,
     return Eigen::Vector4d(-0.5 * qdot.w(), -0.5 * qdot.x(), -0.5 * qdot.y(), -0.5 * qdot.z());
 }
 
+double zonal_earth_potential(const Eigen::Vector3d& r_I, const PropagatorConfig& config) {
+    const double r_norm = r_I.norm();
+    if (r_norm <= 0.0) {
+        return 0.0;
+    }
+    const double s = r_I.z() / r_norm; // sin(geocentric latitude)
+    const double p2 = 0.5 * (3.0 * s * s - 1.0);
+    const double p3 = 0.5 * (5.0 * s * s * s - 3.0 * s);
+    const double s2 = s * s;
+    const double p4 = (35.0 * s2 * s2 - 30.0 * s2 + 3.0) / 8.0;
+    const double ratio = config.earth_equatorial_radius_m / r_norm;
+    const double ratio2 = ratio * ratio;
+    const double ratio3 = ratio2 * ratio;
+    const double ratio4 = ratio2 * ratio2;
+
+    double scale = 1.0;
+    if (config.use_j2_perturbation) {
+        scale -= config.j2_earth * ratio2 * p2;
+    }
+    if (config.use_j3_perturbation) {
+        scale -= config.j3_earth * ratio3 * p3;
+    }
+    if (config.use_j4_perturbation) {
+        scale -= config.j4_earth * ratio4 * p4;
+    }
+    return config.mu_earth_m3_s2 * scale / r_norm;
+}
+
+Eigen::Vector3d earth_gravity_accel(const Eigen::Vector3d& r_I, const PropagatorConfig& config) {
+    const double r_norm = r_I.norm();
+    if (r_norm == 0.0) {
+        throw std::invalid_argument("position magnitude must be non-zero");
+    }
+    if (!(config.use_j2_perturbation || config.use_j3_perturbation || config.use_j4_perturbation) ||
+        config.earth_equatorial_radius_m <= 0.0) {
+        return -config.mu_earth_m3_s2 * r_I / (r_norm * r_norm * r_norm);
+    }
+
+    const double h_raw = std::abs(config.gravity_fd_step_m);
+    const double h = std::max(1e-3, std::min(h_raw > 0.0 ? h_raw : 10.0, 1e-4 * r_norm));
+    Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+    for (int i = 0; i < 3; ++i) {
+        Eigen::Vector3d rp = r_I;
+        Eigen::Vector3d rm = r_I;
+        rp[i] += h;
+        rm[i] -= h;
+        const double up = zonal_earth_potential(rp, config);
+        const double um = zonal_earth_potential(rm, config);
+        grad[i] = (up - um) / (2.0 * h);
+    }
+    return -grad;
+}
+
+Eigen::Vector3d third_body_accel(const Eigen::Vector3d& r_I,
+                                 const Eigen::Vector3d& r_body_I,
+                                 double mu_body) {
+    if (mu_body == 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const double rb = r_body_I.norm();
+    if (rb == 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const Eigen::Vector3d delta = r_body_I - r_I;
+    const double dnorm = delta.norm();
+    if (dnorm == 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    return (mu_body * (delta / (dnorm * dnorm * dnorm) - r_body_I / (rb * rb * rb))).eval();
+}
+
+Eigen::Vector3d srp_accel(const Eigen::Vector3d& r_I,
+                          const Eigen::Vector3d& r_sun_I,
+                          const VehicleParams& vehicle,
+                          const PropagatorConfig& config,
+                          double srp_scale) {
+    if (!config.use_srp_acceleration ||
+        config.srp_area_m2 <= 0.0 ||
+        config.srp_cr <= 0.0 ||
+        vehicle.mass_kg <= 0.0 ||
+        config.solar_pressure_1au_n_m2 <= 0.0 ||
+        config.astronomical_unit_m <= 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const Eigen::Vector3d r_from_sun = r_I - r_sun_I; // Sun -> spacecraft
+    const double d2 = r_from_sun.squaredNorm();
+    if (d2 == 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const double d = std::sqrt(d2);
+    const double scale = std::max(0.0, srp_scale);
+    const double pressure = config.solar_pressure_1au_n_m2 *
+                            (config.astronomical_unit_m * config.astronomical_unit_m / d2);
+    const double a_mag = scale * pressure * config.srp_cr * config.srp_area_m2 / vehicle.mass_kg;
+    return a_mag * (r_from_sun / d);
+}
+
+Eigen::Vector3d albedo_ir_accel(const Eigen::Vector3d& r_I,
+                                const VehicleParams& vehicle,
+                                const PropagatorConfig& config,
+                                double albedo_ir_scale) {
+    if (!config.use_albedo_ir_acceleration ||
+        config.albedo_ir_area_m2 <= 0.0 ||
+        config.albedo_ir_cr <= 0.0 ||
+        vehicle.mass_kg <= 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const double pressure = std::max(0.0, config.albedo_pressure_n_m2 + config.earth_ir_pressure_n_m2);
+    if (pressure <= 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const double r_norm = r_I.norm();
+    if (r_norm <= 0.0) {
+        return Eigen::Vector3d::Zero();
+    }
+    const double scale = std::max(0.0, albedo_ir_scale);
+    const double a_mag = scale * pressure * config.albedo_ir_cr * config.albedo_ir_area_m2 / vehicle.mass_kg;
+    return a_mag * (r_I / r_norm);
+}
+
 State state_derivative(const State& x,
                        const EnvInputs& env,
                        const VehicleParams& vehicle,
@@ -131,14 +251,31 @@ State state_derivative(const State& x,
 
     const Eigen::Matrix3d R_BI = q_BI.toRotationMatrix();
     const Eigen::Vector3d force_I = R_BI.transpose() * force_B;
+    const Eigen::Vector3d r_sun_I = config.sun_ephemeris_scale * env.sun_position_I_m;
+    const Eigen::Vector3d r_moon_I = config.moon_ephemeris_scale * env.moon_position_I_m;
 
-    const double r_norm = r_I.norm();
-    if (r_norm == 0.0) {
-        throw std::invalid_argument("position magnitude must be non-zero");
+    Eigen::Vector3d accel_grav = earth_gravity_accel(r_I, config);
+    if (config.use_sun_third_body) {
+        accel_grav += third_body_accel(r_I, r_sun_I, config.mu_sun_m3_s2);
     }
-
-    const Eigen::Vector3d accel_grav = -config.mu_earth_m3_s2 * r_I / (r_norm * r_norm * r_norm);
-    const Eigen::Vector3d accel_I = accel_grav + force_I / vehicle.mass_kg;
+    if (config.use_moon_third_body) {
+        accel_grav += third_body_accel(r_I, r_moon_I, config.mu_moon_m3_s2);
+    }
+    const Eigen::Vector3d accel_srp = srp_accel(r_I, r_sun_I, vehicle, config, env.srp_scale);
+    const Eigen::Vector3d accel_albedo_ir =
+        albedo_ir_accel(r_I, vehicle, config, env.albedo_ir_scale);
+    Eigen::Vector3d accel_tide = Eigen::Vector3d::Zero();
+    if (config.use_tide_loading_acceleration && config.tide_loading_scale != 0.0) {
+        accel_tide = config.tide_loading_scale * env.tide_loading_accel_I_m_s2;
+    }
+    if (config.use_magnetic_torque &&
+        config.residual_dipole_scale != 0.0 &&
+        config.magnetic_field_scale != 0.0) {
+        const Eigen::Vector3d m_B = config.residual_dipole_scale * config.residual_dipole_B_A_m2;
+        const Eigen::Vector3d B_B = R_BI * (config.magnetic_field_scale * env.magnetic_field_I_T);
+        torque_B += m_B.cross(B_B);
+    }
+    const Eigen::Vector3d accel_I = accel_grav + accel_srp + accel_albedo_ir + accel_tide + force_I / vehicle.mass_kg;
 
     Eigen::Vector3d wdot_B = Eigen::Vector3d::Zero();
     if (!config.freeze_attitude) {

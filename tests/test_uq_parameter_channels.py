@@ -6,6 +6,7 @@ from scripts.uq_parameter_channels import apply_propagator_overrides, apply_uq_p
 class _Cfg:
     rho_bias_tau_s = 0.0
     rho_bias_sigma = 0.0
+    residual_dipole_B_A_m2 = None
 
 
 class TestUqParameterChannels(unittest.TestCase):
@@ -17,10 +18,12 @@ class TestUqParameterChannels(unittest.TestCase):
             "density_scale": 1.0,
             "propagator_overrides": {"rho_bias_tau_s": 7200.0, "rho_bias_sigma": 0.08},
             "uq_mass_rel_sigma": 0.1,
+            "uq_fuel_gauging_rel_sigma": 0.05,
             "uq_inertia_rel_sigma": 0.15,
             "uq_density_scale_rel_sigma": 0.2,
             "uq_rho_bias_tau_rel_sigma": 0.25,
             "uq_rho_bias_sigma_rel_sigma": 0.3,
+            "uq_sun_ephemeris_scale_rel_sigma": 0.1,
         }
         a, draw_a = apply_uq_parameter_channels(scenario, seed=42)
         b, draw_b = apply_uq_parameter_channels(scenario, seed=42)
@@ -30,6 +33,8 @@ class TestUqParameterChannels(unittest.TestCase):
         self.assertGreater(a["density_scale"], 0.0)
         self.assertGreater(a["propagator_overrides"]["rho_bias_tau_s"], 0.0)
         self.assertGreater(a["propagator_overrides"]["rho_bias_sigma"], 0.0)
+        self.assertGreater(a["propagator_overrides"]["sun_ephemeris_scale"], 0.0)
+        self.assertIn("fuel_sigma_rel", a["uq_parameter_draw"]["spacecraft_mass_kg"])
 
     def test_no_sigma_no_draw(self):
         scenario = {"name": "att_a2_nadir_pointing", "spacecraft_mass_kg": 12.0}
@@ -39,9 +44,18 @@ class TestUqParameterChannels(unittest.TestCase):
 
     def test_apply_propagator_overrides(self):
         cfg = _Cfg()
-        apply_propagator_overrides(cfg, {"rho_bias_tau_s": 8000.0, "rho_bias_sigma": 0.1, "unknown": 2.0})
+        apply_propagator_overrides(
+            cfg,
+            {
+                "rho_bias_tau_s": 8000.0,
+                "rho_bias_sigma": 0.1,
+                "residual_dipole_B_A_m2": [0.1, -0.2, 0.3],
+                "unknown": 2.0,
+            },
+        )
         self.assertAlmostEqual(cfg.rho_bias_tau_s, 8000.0)
         self.assertAlmostEqual(cfg.rho_bias_sigma, 0.1)
+        self.assertIsNotNone(cfg.residual_dipole_B_A_m2)
 
 
 if __name__ == "__main__":

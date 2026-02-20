@@ -141,6 +141,116 @@ def _ecef_to_eci(vec_ecef: np.ndarray, gmst_rad: float) -> np.ndarray:
     return rot @ vec_ecef
 
 
+def _sun_position_eci_m(timestamp: dt.datetime) -> np.ndarray:
+    jd = _julian_date(timestamp)
+    t = (jd - 2451545.0) / 36525.0
+    mean_long = math.radians((280.460 + 36000.770 * t) % 360.0)
+    mean_anomaly = math.radians((357.528 + 35999.050 * t) % 360.0)
+    lambda_ecl = (
+        mean_long
+        + math.radians(1.915) * math.sin(mean_anomaly)
+        + math.radians(0.020) * math.sin(2.0 * mean_anomaly)
+    )
+    eps = math.radians(23.4393 - 0.0130 * t)
+    r_au = 1.00014 - 0.01671 * math.cos(mean_anomaly) - 0.00014 * math.cos(2.0 * mean_anomaly)
+    r_m = r_au * 149597870700.0
+    return np.array(
+        [
+            r_m * math.cos(lambda_ecl),
+            r_m * math.cos(eps) * math.sin(lambda_ecl),
+            r_m * math.sin(eps) * math.sin(lambda_ecl),
+        ],
+        dtype=float,
+    )
+
+
+def _moon_position_eci_m(timestamp: dt.datetime) -> np.ndarray:
+    jd = _julian_date(timestamp)
+    d = jd - 2451545.0
+
+    l0 = math.radians((218.316 + 13.176396 * d) % 360.0)
+    mm = math.radians((134.963 + 13.064993 * d) % 360.0)
+    ms = math.radians((357.529 + 0.98560028 * d) % 360.0)
+    darg = math.radians((297.850 + 12.190749 * d) % 360.0)
+    farg = math.radians((93.272 + 13.229350 * d) % 360.0)
+
+    lon = (
+        l0
+        + math.radians(6.289) * math.sin(mm)
+        + math.radians(1.274) * math.sin(2.0 * darg - mm)
+        + math.radians(0.658) * math.sin(2.0 * darg)
+        + math.radians(0.214) * math.sin(2.0 * mm)
+        - math.radians(0.186) * math.sin(ms)
+    )
+    lat = (
+        math.radians(5.128) * math.sin(farg)
+        + math.radians(0.280) * math.sin(mm + farg)
+        + math.radians(0.277) * math.sin(mm - farg)
+        + math.radians(0.173) * math.sin(2.0 * darg - farg)
+    )
+    dist_m = (
+        385001000.0
+        - 20905000.0 * math.cos(mm)
+        - 3699000.0 * math.cos(2.0 * darg - mm)
+        - 2956000.0 * math.cos(2.0 * darg)
+        - 570000.0 * math.cos(2.0 * mm)
+    )
+
+    eps = math.radians(23.4393 - 3.563e-7 * d)
+    x_ecl = dist_m * math.cos(lat) * math.cos(lon)
+    y_ecl = dist_m * math.cos(lat) * math.sin(lon)
+    z_ecl = dist_m * math.sin(lat)
+    return np.array(
+        [
+            x_ecl,
+            y_ecl * math.cos(eps) - z_ecl * math.sin(eps),
+            y_ecl * math.sin(eps) + z_ecl * math.cos(eps),
+        ],
+        dtype=float,
+    )
+
+
+def _earth_dipole_field_eci_t(r_eci_m: np.ndarray) -> np.ndarray:
+    r = np.asarray(r_eci_m, dtype=float).reshape(3)
+    r_norm = float(np.linalg.norm(r))
+    if (not np.isfinite(r_norm)) or r_norm <= 0.0:
+        return np.zeros(3, dtype=float)
+    r_hat = r / r_norm
+    # First-order Earth dipole approximation (aligned with +Z in ECI for simplicity).
+    m_vec = np.array([0.0, 0.0, 7.94e22], dtype=float)  # [A m^2]
+    mu0_over_4pi = 1.0e-7
+    return (mu0_over_4pi / (r_norm ** 3)) * (3.0 * np.dot(m_vec, r_hat) * r_hat - m_vec)
+
+
+def _tide_loading_accel_eci_m_s2(
+    r_eci_m: np.ndarray,
+    sun_eci_m: np.ndarray,
+    moon_eci_m: np.ndarray,
+) -> np.ndarray:
+    r = np.asarray(r_eci_m, dtype=float).reshape(3)
+    rn = float(np.linalg.norm(r))
+    if (not np.isfinite(rn)) or rn <= 0.0:
+        return np.zeros(3, dtype=float)
+    rhat = r / rn
+
+    sun = np.asarray(sun_eci_m, dtype=float).reshape(3)
+    moon = np.asarray(moon_eci_m, dtype=float).reshape(3)
+    sun_n = float(np.linalg.norm(sun))
+    moon_n = float(np.linalg.norm(moon))
+    if sun_n <= 0.0 or moon_n <= 0.0:
+        return np.zeros(3, dtype=float)
+    sun_hat = sun / sun_n
+    moon_hat = moon / moon_n
+
+    # Surrogate Earth tide/loading acceleration model:
+    # a_tide ~ A * (3 (rhat·dhat) dhat - rhat), summed for Sun and Moon.
+    amp_sun = 1.5e-8
+    amp_moon = 2.5e-8
+    sun_term = amp_sun * (3.0 * float(np.dot(rhat, sun_hat)) * sun_hat - rhat)
+    moon_term = amp_moon * (3.0 * float(np.dot(rhat, moon_hat)) * moon_hat - rhat)
+    return sun_term + moon_term
+
+
 def _load_swpc_json(path: str) -> Tuple[str, list]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -1445,21 +1555,14 @@ class EnvSeriesBuilder:
         dens = self._density_model.evaluate(t_grid, lat_deg, lon_deg, alt_m, indices)
         wind = self._wind_model.evaluate(t_grid, lat_deg, lon_deg, alt_m, indices)
 
-        n = len(_to_datetime64_array(t_grid))
+        times = _to_datetime64_array(t_grid)
+        n = len(times)
         if len(dens.density_kg_m3) != n or len(wind.wind_I) != n:
             raise DataSourceError("model outputs must match t_grid length")
 
-        env = []
-        for i in range(n):
-            e = EnvInputs()
-            e.density = float(dens.density_kg_m3[i])
-            e.temperature_K = float(dens.temperature_K[i])
-            e.particles_mass_kg = float(dens.particles_mass_kg[i])
-            e.wind_I = wind.wind_I[i]
-            env.append(e)
-
         srp_scale = None
         in_eclipse = None
+        srp_scale_arr = np.ones(n, dtype=float)
         if self._srp_eclipse_model is not None:
             if r_eci is None:
                 raise DataSourceError("r_eci is required for SRP/eclipse evaluation")
@@ -1468,5 +1571,34 @@ class EnvSeriesBuilder:
             in_eclipse = srp.get("in_eclipse")
             if srp_scale is None or in_eclipse is None:
                 raise DataSourceError("srp_eclipse_model must return srp_scale and in_eclipse")
+            srp_scale_arr = np.asarray(srp_scale, dtype=float).reshape(-1)
+            if srp_scale_arr.size != n:
+                raise DataSourceError("srp_scale length must match t_grid")
+            srp_scale_arr = np.clip(srp_scale_arr, 0.0, 1.5)
+
+        r_eci_arr = None
+        if r_eci is not None:
+            r_eci_arr = np.asarray(r_eci, dtype=float)
+            if r_eci_arr.shape != (n, 3):
+                raise DataSourceError("r_eci must have shape (len(t_grid), 3)")
+
+        env = []
+        for i in range(n):
+            ts = _datetime64_to_datetime(times[i])
+            sun_i = _sun_position_eci_m(ts)
+            moon_i = _moon_position_eci_m(ts)
+            e = EnvInputs()
+            e.density = float(dens.density_kg_m3[i])
+            e.temperature_K = float(dens.temperature_K[i])
+            e.particles_mass_kg = float(dens.particles_mass_kg[i])
+            e.wind_I = wind.wind_I[i]
+            e.sun_position_I_m = sun_i
+            e.moon_position_I_m = moon_i
+            e.srp_scale = float(srp_scale_arr[i])
+            e.albedo_ir_scale = 1.0
+            if r_eci_arr is not None:
+                e.magnetic_field_I_T = _earth_dipole_field_eci_t(r_eci_arr[i])
+                e.tide_loading_accel_I_m_s2 = _tide_loading_accel_eci_m_s2(r_eci_arr[i], sun_i, moon_i)
+            env.append(e)
 
         return EnvSeries(env_inputs=env, space_weather=indices, srp_scale=srp_scale, in_eclipse=in_eclipse)
